@@ -121,14 +121,18 @@ class Mesh:
   @functools.lru_cache(maxsize=None)
   def _get_op_sharding_args(self, partition_spec: PartitionSpec):
     partition_spec = _translate_named_partition_spec(self, partition_spec)
+    print("Translated partition spec:", partition_spec)
     flat_specs = np.hstack([d for d in partition_spec])
+    print("Flat Specs: ", flat_specs)
     specs = [d for d in flat_specs if d is not None]
+    print("Specs: ", specs)
     assert all(d >= 0 and d < len(self.mesh_shape) for d in specs), \
       f"partition_spec ({partition_spec}) contains out of bound index into mesh_shape."
     assert len(specs) == len(np.unique(specs)), \
     f"Each device mesh dimension should appear at most once in partition_spec {partition_spec}."
 
     tile_assignment = _get_tile_assignment(self, partition_spec)
+    print("Initial Tile Assignment: ", tile_assignment)
     if len(tile_assignment.shape) > len(partition_spec):
       # Use partial replication for sharding a tensor over a higher-rank mesh
       sharding_type = ShardingType.PARTIAL
@@ -139,6 +143,8 @@ class Mesh:
         sharding_type, tile_assignment, len(partition_spec), replicate_dims)
 
     tile_assignment = tile_assignment.tolist()
+    print("Initial Tile Assignment (after tolist): ", tile_assignment)
+    print("Initial Sharding Type: ", sharding_type)
     sharding_type = int(sharding_type)
     return tile_assignment, group_assignment, replication_groups, sharding_type
 
@@ -149,6 +155,8 @@ class Mesh:
     Return the OpSharding for the given partition spec. This is an expensive
     operation as the mesh grows, so the value is cached for reuse.
     """
+    print("[HET DEBUG]")
+    print("Partition spec:", partition_spec)
     # For scalar tensors, it can only be replicated.
     # We have made sure len(t.shape) == len(partition_spec)
     # in mark_sharding API.
@@ -157,6 +165,11 @@ class Mesh:
 
     tile_assignment, group_assignment, replication_groups, sharding_type = self._get_op_sharding_args(
         partition_spec)
+    print("Final Tile Assignment: ", tile_assignment)
+    print("Final Group Assignment: ", group_assignment)
+    print("Final Replication Groups: ", replication_groups)
+    print("Final Sharding Type: ", sharding_type)
+    
     return torch_xla._XLAC.OpSharding(tile_assignment, group_assignment,
                                       replication_groups, sharding_type)
 
@@ -596,6 +609,18 @@ def annotate_custom_sharding(t: Union[torch.Tensor,
   annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)
 
+def print_op_sharding(op_sharding: torch_xla._XLAC.OpSharding):
+  """
+  Print the OpSharding information in a human-readable format.
+  """
+  print("----------OP SHARDING----------")
+  print("Type: ", op_sharding.type())
+  print("Tile Shape: ", op_sharding.tile_shape())
+  print("Tile Assignment Dimensions: ", op_sharding.tile_assignment_dimensions())
+  print("Tile Assignment Devices: ", op_sharding.tile_assignment_devices())
+  print("Iota Reshape Dims: ", op_sharding.iota_reshape_dims())
+  print("Iota Transpose Perm: ", op_sharding.iota_transpose_perm())
+  print("---------\OP SHARDING----------")
 
 def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
                   partition_spec: PartitionSpec) -> XLAShardedTensor:
@@ -649,6 +674,7 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
     return t
 
   op_sharding = mesh.get_op_sharding(partition_spec)
+  print_op_sharding(op_sharding)
   annotate_func = torch_xla._XLAC._xla_mark_sharding
   annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)
