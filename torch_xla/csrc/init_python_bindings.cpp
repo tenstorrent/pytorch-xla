@@ -1511,6 +1511,10 @@ void InitXlaModuleBindings(py::module m) {
             tile_assignment, group_assignment, replication_groups,
             ShardingUtil::ShardingType(sharding_type));
       })
+      .def_init([](const py::list& tile_assignemnt, const py::list& reshape_dims, const py::list& transpose_perm) {
+        return ShardingUtil::CreateIotaOpSharding(
+            tile_assignemnt, reshape_dims, transpose_perm);
+      })
       .def("type",
            [](const xla::OpSharding& sharding) -> xla::OpSharding::Type {
              return sharding.type();
