@@ -218,6 +218,17 @@ bool ShardingUtil::EqualOpShardings(const xla::OpSharding& a,
   return xla::protobuf_util::HaveSameSerialization(a, b);
 }
 
+xla::OpSharding ShardingUtil::CreateIotaOpSharding(
+    const py::list& tile_assignment, const py::list& reshape_dims,
+    const py::list& transpose_perm) {
+  auto dims = TileAssignmentDimensions(tile_assignment);
+  auto reshape_dims_vec = reshape_dims.cast<std::vector<int64_t>>();
+  auto transpose_perm_vec = transpose_perm.cast<std::vector<int>>();
+  return xla::HloSharding::IotaTile(dims, reshape_dims_vec,
+                                    transpose_perm_vec)
+      .ToProto();
+}
+
 xla::OpSharding ShardingUtil::CreateOpSharding(
     const py::list& tile_assignment, const py::list& group_assignment,
     const py::list& replication_groups, ShardingType sharding_type) {
