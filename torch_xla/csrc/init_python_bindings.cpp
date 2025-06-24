@@ -79,6 +79,8 @@
 #include "xla/pjrt/distributed/distributed.h"
 #include "xla/python/profiler/internal/traceme_wrapper.h"
 
+#define PYBIND11_DETAILED_ERROR_MESSAGES
+
 namespace torch_xla {
 namespace {
 
@@ -1502,6 +1504,7 @@ void InitXlaModuleBindings(py::module m) {
 
   // Define the _XLAC.OpSharding class.
   PythonScope<py::class_<xla::OpSharding>>(m, "OpSharding")
+      // Constructor for V1 shardings
       .def_init([](const py::list& tile_assignment,
                    const py::list& group_assignment,
                    const py::list& replication_groups, int sharding_type) {
@@ -1509,9 +1512,21 @@ void InitXlaModuleBindings(py::module m) {
             tile_assignment, group_assignment, replication_groups,
             ShardingUtil::ShardingType(sharding_type));
       })
-      .def_init([](const py::list& tile_assignemnt, const py::list& reshape_dims, const py::list& transpose_perm) {
-        return ShardingUtil::CreateIotaOpSharding(
-            tile_assignemnt, reshape_dims, transpose_perm);
+      // Constructor for V2 TILED shardings.
+      // TODO: Refactor this to be cleaner
+      .def_init([](const py::list& tile_assignemnt,
+                   const py::list& reshape_dims,
+                   const py::list& transpose_perm) {
+        return ShardingUtil::CreateIotaOpShardingForTiled(tile_assignemnt, reshape_dims,
+                                                  transpose_perm);
+      })
+      // Constructor for V2 PARTIAL shardings.
+      // TODO: Refactor this to be cleaner
+      .def_init([](const py::list& tile_assignemnt,
+                   const py::list& reshape_dims, const py::list& transpose_perm,
+                   int replicated_size, bool is_v2 /* Only used to disambiguate */) {
+        return ShardingUtil::CreateIotaOpShardingForPartial(
+            tile_assignemnt, reshape_dims, transpose_perm, replicated_size);
       })
       .def("type",
            [](const xla::OpSharding& sharding) -> xla::OpSharding::Type {
@@ -1537,23 +1552,22 @@ void InitXlaModuleBindings(py::module m) {
              }
              return devices;
            })
-        .def("iota_reshape_dims",
-             [](const xla::OpSharding& sharding) -> py::list {
-               py::list iota_reshape_dims;
-               for (int64_t dim : sharding.iota_reshape_dims()) {
-                 iota_reshape_dims.append(dim);
-               }
-               return iota_reshape_dims;
-             })
-        .def("iota_transpose_perm",
-              [](const xla::OpSharding& sharding) -> py::list {
-                py::list iota_transpose_perms;
-                for (int32_t perm : sharding.iota_transpose_perm()) {
-                  iota_transpose_perms.append(perm);
-                }
-                return iota_transpose_perms;
-              })
-           ;
+      .def("iota_reshape_dims",
+           [](const xla::OpSharding& sharding) -> py::list {
+             py::list iota_reshape_dims;
+             for (int64_t dim : sharding.iota_reshape_dims()) {
+               iota_reshape_dims.append(dim);
+             }
+             return iota_reshape_dims;
+           })
+      .def("iota_transpose_perm",
+           [](const xla::OpSharding& sharding) -> py::list {
+             py::list iota_transpose_perms;
+             for (int32_t perm : sharding.iota_transpose_perm()) {
+               iota_transpose_perms.append(perm);
+             }
+             return iota_transpose_perms;
+           });
 
   // Define the _XLAC.PjRtPlugin class.
   PythonScope<py::class_<runtime::PjRtPlugin, PyPjRtPlugin,

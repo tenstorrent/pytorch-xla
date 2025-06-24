@@ -218,7 +218,7 @@ bool ShardingUtil::EqualOpShardings(const xla::OpSharding& a,
   return xla::protobuf_util::HaveSameSerialization(a, b);
 }
 
-xla::OpSharding ShardingUtil::CreateIotaOpSharding(
+xla::OpSharding ShardingUtil::CreateIotaOpShardingForTiled(
     const py::list& tile_assignment, const py::list& reshape_dims,
     const py::list& transpose_perm) {
   auto dims = TileAssignmentDimensions(tile_assignment);
@@ -226,6 +226,42 @@ xla::OpSharding ShardingUtil::CreateIotaOpSharding(
   auto transpose_perm_vec = transpose_perm.cast<std::vector<int>>();
   return xla::HloSharding::IotaTile(dims, reshape_dims_vec,
                                     transpose_perm_vec)
+      .ToProto();
+}
+
+template <typename T>
+void PrintVector(const std::vector<T>& vec) {
+  std::cout << "[";
+  for (size_t i = 0; i < vec.size(); ++i) {
+    if constexpr (std::is_same_v<T, std::string>)
+      std::cout << '"' << vec[i] << '"';
+    else
+      std::cout << vec[i];
+    if (i + 1 != vec.size()) std::cout << ", ";
+  }
+  std::cout << "]" << std::endl;
+}
+
+xla::OpSharding ShardingUtil::CreateIotaOpShardingForPartial(
+    const py::list& tile_assignment, const py::list& reshape_dims,
+    const py::list& transpose_perm, int replicated_size) {
+  auto dims = TileAssignmentDimensions(tile_assignment);
+  dims.push_back(replicated_size);
+  std::cout << "[CreateIotaOpShardingForPartial] Dims: \n";
+  PrintVector(dims);
+  // For now we only consider REPLICATED subgroups in Partial sharding, not
+  // MANUAL
+  std::vector<xla::OpSharding::Type> subgroup_types(
+      1, xla::OpSharding::REPLICATED);
+  auto reshape_dims_vec = reshape_dims.cast<std::vector<int64_t>>();
+  std::cout << "[CreateIotaOpShardingForPartial] Reshape Dims Vec: \n";
+  PrintVector(reshape_dims_vec);
+  auto transpose_perm_vec = transpose_perm.cast<std::vector<int>>();
+  std::cout << "[CreateIotaOpShardingForPartial] Transpose Perm Vec: \n";
+  PrintVector(transpose_perm_vec);
+  return xla::HloSharding::Subgroup(
+             xla::TileAssignment(dims, reshape_dims_vec, transpose_perm_vec),
+             subgroup_types)
       .ToProto();
 }
 

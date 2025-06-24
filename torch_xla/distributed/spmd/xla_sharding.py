@@ -144,6 +144,22 @@ class Mesh:
       reshape_dims = list(self.mesh_shape)
       transpose_perm = list(partition_spec)
       return torch_xla._XLAC.OpSharding(tile_assignment.tolist(), reshape_dims, transpose_perm)
+    elif sharding_type == ShardingType.PARTIAL:
+      reshape_dims = list(self.mesh_shape)
+      transpose_perm = [i for i in partition_spec if i is not None]
+      # Stores (axis_index, axis_capacity) pairs
+      replicated_mesh_axes = []
+      for i in range(len(partition_spec)):
+        if partition_spec[i] is None:
+          replicated_mesh_axes.append((i, self.mesh_shape[i]))
+      replicated_size = 1
+      axes_indices = []
+      for i, size in replicated_mesh_axes:
+        replicated_size *= size
+        axes_indices.append(i)
+      
+      transpose_perm.extend(axes_indices)
+      return torch_xla._XLAC.OpSharding(tile_assignment.tolist(), reshape_dims, transpose_perm, replicated_size, True)
     else:
       # Use V1 sharding annotations
       replicate_dims = {i for i, d in enumerate(partition_spec) if d is None}
