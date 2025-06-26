@@ -1514,22 +1514,28 @@ void InitXlaModuleBindings(py::module m) {
             tile_assignment, group_assignment, replication_groups,
             ShardingUtil::ShardingType(sharding_type));
       })
-      // Constructor for V2 TILED shardings.
-      // TODO: Refactor this to be cleaner
-      .def_init([](const py::list& tile_assignemnt,
+      .def_init([](const py::list& dims,
                    const py::list& reshape_dims,
                    const py::list& transpose_perm) {
-        return ShardingUtil::CreateIotaOpShardingForTiled(tile_assignemnt, reshape_dims,
-                                                  transpose_perm);
+        return ShardingUtil::CreateIotaOpSharding(
+            dims, reshape_dims, transpose_perm);
       })
-      // Constructor for V2 PARTIAL shardings.
-      // TODO: Refactor this to be cleaner
-      .def_init([](const py::list& tile_assignemnt,
-                   const py::list& reshape_dims, const py::list& transpose_perm,
-                   int replicated_size, bool is_v2 /* Only used to disambiguate */) {
-        return ShardingUtil::CreateIotaOpShardingForPartial(
-            tile_assignemnt, reshape_dims, transpose_perm, replicated_size);
-      })
+      // // Constructor for V2 TILED shardings.
+      // // TODO: Refactor this to be cleaner
+      // .def_init([](const py::list& tile_assignemnt,
+      //              const py::list& reshape_dims,
+      //              const py::list& transpose_perm) {
+      //   return ShardingUtil::CreateIotaOpShardingForTiled(tile_assignemnt, reshape_dims,
+      //                                             transpose_perm);
+      // })
+      // // Constructor for V2 PARTIAL shardings.
+      // // TODO: Refactor this to be cleaner
+      // .def_init([](const py::list& tile_assignemnt,
+      //              const py::list& reshape_dims, const py::list& transpose_perm,
+      //              int replicated_size, bool is_v2 /* Only used to disambiguate */) {
+      //   return ShardingUtil::CreateIotaOpShardingForPartial(
+      //       tile_assignemnt, reshape_dims, transpose_perm, replicated_size);
+      // })
       .def("type",
            [](const xla::OpSharding& sharding) -> xla::OpSharding::Type {
              return sharding.type();
