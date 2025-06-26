@@ -51,6 +51,11 @@ class ShardingUtil {
                                           const py::list& group_assignment,
                                           const py::list& replication_groups,
                                           ShardingType sharding_type);
+  // Creates an xla::OpSharding for TILED and PARTIAL types using the
+  // HloShardingV2 system.
+  static xla::OpSharding CreateIotaOpSharding(
+      const py::list& dims, const py::list& reshape_dims,
+      const py::list& transpose_perm);
   static xla::OpSharding CreateIotaOpShardingForTiled(
       const py::list& tile_assignment, const py::list& reshape_dims,
       const py::list& transpose_perm);
