@@ -629,6 +629,13 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       mlir::ModuleOp mlir_module =
           mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
       ConvertHloToStableHlo(instance.computation.mutable_proto(), &mlir_module);
+      std::cout << "[HET DEBUG PJRT] StableHLO module before:\n";
+      mlir_module.print(llvm::outs());
+      llvm::outs() << "\n";
+      ConvertStableHloToSdy(&mlir_module);
+      std::cout << "[HET DEBUG PJRT] StableHLO module after:\n";
+      mlir_module.print(llvm::outs());
+      llvm::outs() << "\n";
       executable = util::RaisePythonValueErrorOnFailure([&] {
         return fake_xla_compile_
                    ? fake_xla_compile_()
