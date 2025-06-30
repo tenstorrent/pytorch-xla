@@ -117,61 +117,6 @@ class Mesh:
     if name not in self.axis_names:
       return None
     return self.axis_names.index(name)
-  
-  def _get_op_sharding(self, partition_spec: PartitionSpec) -> torch_xla._XLAC.OpSharding:
-    partition_spec = _translate_named_partition_spec(self, partition_spec)
-    print("Translated partition spec:", partition_spec)
-    flat_specs = np.hstack([d for d in partition_spec])
-    print("Flat Specs: ", flat_specs)
-    specs = [d for d in flat_specs if d is not None]
-    print("Specs: ", specs)
-    assert all(d >= 0 and d < len(self.mesh_shape) for d in specs), \
-      f"partition_spec ({partition_spec}) contains out of bound index into mesh_shape."
-    assert len(specs) == len(np.unique(specs)), \
-    f"Each device mesh dimension should appear at most once in partition_spec {partition_spec}."
-
-    tile_assignment = _get_tile_assignment(self, partition_spec)
-    print("Initial Tile Assignment: ", tile_assignment)
-    if len(tile_assignment.shape) > len(partition_spec):
-      # Use partial replication for sharding a tensor over a higher-rank mesh
-      sharding_type = ShardingType.PARTIAL
-    else:
-      sharding_type = _get_sharding_type(partition_spec, self.size())
-    
-    # TODO: Add support for ShardingType.PARTIAL
-    if sharding_type == ShardingType.TILED:
-      # Use V2 sharding annotations
-      reshape_dims = list(self.mesh_shape)
-      transpose_perm = list(partition_spec)
-      return torch_xla._XLAC.OpSharding(tile_assignment.tolist(), reshape_dims, transpose_perm)
-    elif sharding_type == ShardingType.PARTIAL:
-      reshape_dims = list(self.mesh_shape)
-      transpose_perm = [i for i in partition_spec if i is not None]
-      # Stores (axis_index, axis_capacity) pairs
-      replicated_mesh_axes = []
-      for i in range(len(partition_spec)):
-        if partition_spec[i] is None:
-          replicated_mesh_axes.append((i, self.mesh_shape[i]))
-      replicated_size = 1
-      axes_indices = []
-      for i, size in replicated_mesh_axes:
-        replicated_size *= size
-        axes_indices.append(i)
-      
-      transpose_perm.extend(axes_indices)
-      return torch_xla._XLAC.OpSharding(tile_assignment.tolist(), reshape_dims, transpose_perm, replicated_size, True)
-    else:
-      # Use V1 sharding annotations
-      replicate_dims = {i for i, d in enumerate(partition_spec) if d is None}
-      group_assignment, replication_groups = _get_group_assignment(
-          sharding_type, tile_assignment, len(partition_spec), replicate_dims)
-
-      tile_assignment = tile_assignment.tolist()
-      print("Initial Tile Assignment (after tolist): ", tile_assignment)
-      print("Initial Sharding Type: ", sharding_type)
-      sharding_type = int(sharding_type)
-      return torch_xla._XLAC.OpSharding(tile_assignment, group_assignment, replication_groups, sharding_type)
-
   @functools.lru_cache(maxsize=None)
   def _get_op_sharding_args(self, partition_spec: PartitionSpec):
     partition_spec = _translate_named_partition_spec(self, partition_spec)
@@ -272,25 +217,17 @@ class Mesh:
     Return the OpSharding for the given partition spec. This is an expensive
     operation as the mesh grows, so the value is cached for reuse.
     """
-    print("[HET DEBUG]")
-    print("Partition spec:", partition_spec)
     # For scalar tensors, it can only be replicated.
     # We have made sure len(t.shape) == len(partition_spec)
     # in mark_sharding API.
     if len(partition_spec) == 0:
       return torch_xla._XLAC.OpSharding([], [], [], ShardingType.REPLICATED)
 
-    # tile_assignment, group_assignment, replication_groups, sharding_type = self._get_op_sharding_args(
-    #     partition_spec)
-    # print("Final Tile Assignment: ", tile_assignment)
-    # print("Final Group Assignment: ", group_assignment)
-    # print("Final Replication Groups: ", replication_groups)
-    # print("Final Sharding Type: ", sharding_type)
+    tile_assignment, group_assignment, replication_groups, sharding_type = self._get_op_sharding_args(
+        partition_spec)
     
-    # return torch_xla._XLAC.OpSharding(tile_assignment, group_assignment,
-    #                                   replication_groups, sharding_type)
-
-    return self._get_op_sharding(partition_spec)
+    return torch_xla._XLAC.OpSharding(tile_assignment, group_assignment,
+                                      replication_groups, sharding_type)
 
   def __str__(self):
     """Convert Mesh to string representation."""
