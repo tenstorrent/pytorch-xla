@@ -56,12 +56,6 @@ class ShardingUtil {
   static xla::OpSharding CreateIotaOpSharding(
       const py::list& dims, const py::list& reshape_dims,
       const py::list& transpose_perm);
-  static xla::OpSharding CreateIotaOpShardingForTiled(
-      const py::list& tile_assignment, const py::list& reshape_dims,
-      const py::list& transpose_perm);
-  static xla::OpSharding CreateIotaOpShardingForPartial(
-      const py::list& tile_assignment, const py::list& reshape_dims,
-      const py::list& transpose_perm, int replicated_size);
 
   // Returns the shape of the resulting shards of `tensor` after applying
   // `sharding`. This assumes the shards will be padded to ensure they all

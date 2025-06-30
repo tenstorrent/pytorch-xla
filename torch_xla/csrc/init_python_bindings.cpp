@@ -79,8 +79,6 @@
 #include "xla/pjrt/distributed/distributed.h"
 #include "xla/python/profiler/internal/traceme_wrapper.h"
 
-#define PYBIND11_DETAILED_ERROR_MESSAGES
-
 namespace torch_xla {
 namespace {
 
@@ -1524,28 +1522,13 @@ void InitXlaModuleBindings(py::module m) {
             tile_assignment, group_assignment, replication_groups,
             ShardingUtil::ShardingType(sharding_type));
       })
+      // Constructor for V2 shardings.
       .def_init([](const py::list& dims,
                    const py::list& reshape_dims,
                    const py::list& transpose_perm) {
         return ShardingUtil::CreateIotaOpSharding(
             dims, reshape_dims, transpose_perm);
       })
-      // // Constructor for V2 TILED shardings.
-      // // TODO: Refactor this to be cleaner
-      // .def_init([](const py::list& tile_assignemnt,
-      //              const py::list& reshape_dims,
-      //              const py::list& transpose_perm) {
-      //   return ShardingUtil::CreateIotaOpShardingForTiled(tile_assignemnt, reshape_dims,
-      //                                             transpose_perm);
-      // })
-      // // Constructor for V2 PARTIAL shardings.
-      // // TODO: Refactor this to be cleaner
-      // .def_init([](const py::list& tile_assignemnt,
-      //              const py::list& reshape_dims, const py::list& transpose_perm,
-      //              int replicated_size, bool is_v2 /* Only used to disambiguate */) {
-      //   return ShardingUtil::CreateIotaOpShardingForPartial(
-      //       tile_assignemnt, reshape_dims, transpose_perm, replicated_size);
-      // })
       .def("type",
            [](const xla::OpSharding& sharding) -> xla::OpSharding::Type {
              return sharding.type();
