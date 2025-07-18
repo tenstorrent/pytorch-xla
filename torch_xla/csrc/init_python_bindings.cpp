@@ -1513,11 +1513,10 @@ void InitXlaModuleBindings(py::module m) {
             ShardingUtil::ShardingType(sharding_type));
       })
       // Constructor for V2 shardings.
-      .def_init([](const py::list& dims,
-                   const py::list& reshape_dims,
+      .def_init([](const py::list& dims, const py::list& reshape_dims,
                    const py::list& transpose_perm) {
-        return ShardingUtil::CreateIotaOpSharding(
-            dims, reshape_dims, transpose_perm);
+        return ShardingUtil::CreateIotaOpSharding(dims, reshape_dims,
+                                                  transpose_perm);
       });
 
   // Define the _XLAC.PjRtPlugin class.

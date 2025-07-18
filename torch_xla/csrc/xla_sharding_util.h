@@ -53,9 +53,9 @@ class ShardingUtil {
                                           ShardingType sharding_type);
   // Creates an xla::OpSharding for TILED and PARTIAL types using the
   // HloShardingV2 system.
-  static xla::OpSharding CreateIotaOpSharding(
-      const py::list& dims, const py::list& reshape_dims,
-      const py::list& transpose_perm);
+  static xla::OpSharding CreateIotaOpSharding(const py::list& dims,
+                                              const py::list& reshape_dims,
+                                              const py::list& transpose_perm);
 
   // Returns the shape of the resulting shards of `tensor` after applying
   // `sharding`. This assumes the shards will be padded to ensure they all

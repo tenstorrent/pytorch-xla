@@ -229,7 +229,8 @@ xla::OpSharding ShardingUtil::CreateIotaOpSharding(
     subgroup_types.push_back(xla::OpSharding::REPLICATED);
   }
   return xla::HloSharding::Subgroup(
-             xla::TileAssignment(dims_vec, reshape_dims_vec, transpose_perm_vec),
+             xla::TileAssignment(dims_vec, reshape_dims_vec,
+                                 transpose_perm_vec),
              subgroup_types)
       .ToProto();
 }

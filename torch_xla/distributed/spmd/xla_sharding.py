@@ -118,7 +118,7 @@ class Mesh:
     if name not in self.axis_names:
       return None
     return self.axis_names.index(name)
-  
+
   def _validate_translated_partition_spec(self, partition_spec: tuple):
     flat_specs = np.hstack([d for d in partition_spec])
     specs = [d for d in flat_specs if d is not None]
@@ -177,7 +177,7 @@ class Mesh:
       else:
         # Replicated mesh axis
         dims.append(1)
-    
+
     transpose_perm = [k for k in used_axes.keys()]
     for i in range(len(self.mesh_shape)):
       if i not in used_axes:
@@ -188,17 +188,19 @@ class Mesh:
     return dims, reshape_dims, transpose_perm
 
   @functools.lru_cache(maxsize=None)
-  def get_op_sharding_v2(self, partition_spec: PartitionSpec) -> torch_xla._XLAC.OpSharding:
+  def get_op_sharding_v2(
+      self, partition_spec: PartitionSpec) -> torch_xla._XLAC.OpSharding:
     """
     Return the OpSharding for the given partition spec using V2 annotations.
     """
     if len(partition_spec) == 0:
-        return torch_xla._XLAC.OpSharding([], [], [], ShardingType.REPLICATED)
+      return torch_xla._XLAC.OpSharding([], [], [], ShardingType.REPLICATED)
     sharding_type = _get_sharding_type(partition_spec, self.size())
     if sharding_type not in (ShardingType.TILED, ShardingType.PARTIAL):
       return torch_xla._XLAC.OpSharding([], [], [0], sharding_type)
 
-    dims, reshape_dims, transpose_perm = self._get_op_sharding_args_v2(partition_spec)
+    dims, reshape_dims, transpose_perm = self._get_op_sharding_args_v2(
+        partition_spec)
     return torch_xla._XLAC.OpSharding(dims, reshape_dims, transpose_perm)
 
   @functools.lru_cache(maxsize=None)
@@ -216,7 +218,7 @@ class Mesh:
 
     tile_assignment, group_assignment, replication_groups, sharding_type = self._get_op_sharding_args(
         partition_spec)
-    
+
     return torch_xla._XLAC.OpSharding(tile_assignment, group_assignment,
                                       replication_groups, sharding_type)
 
@@ -655,6 +657,7 @@ def annotate_custom_sharding(t: Union[torch.Tensor,
   annotate_func = torch_xla._XLAC._xla_annotate_custom_sharding
   annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)
+
 
 def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
                   partition_spec: PartitionSpec) -> XLAShardedTensor:
