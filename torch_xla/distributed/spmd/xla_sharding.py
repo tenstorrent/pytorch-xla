@@ -1,6 +1,7 @@
 import collections
 from collections.abc import Generator, MutableMapping
 import math
+import os
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 import torch
@@ -117,21 +118,27 @@ class Mesh:
     if name not in self.axis_names:
       return None
     return self.axis_names.index(name)
+  
+  def _validate_translated_partition_spec(self, partition_spec: tuple):
+    flat_specs = np.hstack([d for d in partition_spec])
+    specs = [d for d in flat_specs if d is not None]
+    assert all(d >= 0 and d < len(self.mesh_shape) for d in specs), \
+      f"partition_spec ({partition_spec}) contains out of bound index into mesh_shape."
+    assert len(specs) == len(np.unique(specs)), \
+    f"Each device mesh dimension should appear at most once in partition_spec {partition_spec}."
+
   @functools.lru_cache(maxsize=None)
   def _get_op_sharding_args(self, partition_spec: PartitionSpec):
     partition_spec = _translate_named_partition_spec(self, partition_spec)
-    print("Translated partition spec:", partition_spec)
+    self._validate_translated_partition_spec(partition_spec)
     flat_specs = np.hstack([d for d in partition_spec])
-    print("Flat Specs: ", flat_specs)
     specs = [d for d in flat_specs if d is not None]
-    print("Specs: ", specs)
     assert all(d >= 0 and d < len(self.mesh_shape) for d in specs), \
       f"partition_spec ({partition_spec}) contains out of bound index into mesh_shape."
     assert len(specs) == len(np.unique(specs)), \
     f"Each device mesh dimension should appear at most once in partition_spec {partition_spec}."
 
     tile_assignment = _get_tile_assignment(self, partition_spec)
-    print("Initial Tile Assignment: ", tile_assignment)
     if len(tile_assignment.shape) > len(partition_spec):
       # Use partial replication for sharding a tensor over a higher-rank mesh
       sharding_type = ShardingType.PARTIAL
@@ -142,27 +149,15 @@ class Mesh:
         sharding_type, tile_assignment, len(partition_spec), replicate_dims)
 
     tile_assignment = tile_assignment.tolist()
-    print("Initial Tile Assignment (after tolist): ", tile_assignment)
-    print("Initial Sharding Type: ", sharding_type)
     sharding_type = int(sharding_type)
     return tile_assignment, group_assignment, replication_groups, sharding_type
-
-  def _validate_translated_partition_spec(self, partition_spec: tuple):
-    flat_specs = np.hstack([d for d in partition_spec])
-    specs = [d for d in flat_specs if d is not None]
-    assert all(d >= 0 and d < len(self.mesh_shape) for d in specs), \
-      f"partition_spec ({partition_spec}) contains out of bound index into mesh_shape."
-    assert len(specs) == len(np.unique(specs)), \
-    f"Each device mesh dimension should appear at most once in partition_spec {partition_spec}."
 
   @functools.lru_cache(maxsize=None)
   def _get_op_sharding_args_v2(self, partition_spec: PartitionSpec):
     """
     Returns the appropriate dims, reshape_dims, and transpose_perm for the given partition spec.
     """
-    print("Partition Spec: ", partition_spec)
     partition_spec = _translate_named_partition_spec(self, partition_spec)
-    print("Translated partition spec:", partition_spec)
     self._validate_translated_partition_spec(partition_spec)
 
     dims = []
@@ -190,10 +185,6 @@ class Mesh:
         transpose_perm.append(i)
     reshape_dims = list(self.mesh_shape)
 
-    print("Dims: ", dims)
-    print("Reshape Dims: ", reshape_dims)
-    print("Transpose Perm: ", transpose_perm)
-
     return dims, reshape_dims, transpose_perm
 
   @functools.lru_cache(maxsize=None)
@@ -205,8 +196,8 @@ class Mesh:
         return torch_xla._XLAC.OpSharding([], [], [], ShardingType.REPLICATED)
     sharding_type = _get_sharding_type(partition_spec, self.size())
     if sharding_type not in (ShardingType.TILED, ShardingType.PARTIAL):
-      return torch_xla._XLAC.OpSharding([], [], [], sharding_type)
-    
+      return torch_xla._XLAC.OpSharding([], [], [0], sharding_type)
+
     dims, reshape_dims, transpose_perm = self._get_op_sharding_args_v2(partition_spec)
     return torch_xla._XLAC.OpSharding(dims, reshape_dims, transpose_perm)
 
@@ -665,19 +656,6 @@ def annotate_custom_sharding(t: Union[torch.Tensor,
   annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)
 
-def print_op_sharding(op_sharding: torch_xla._XLAC.OpSharding):
-  """
-  Print the OpSharding information in a human-readable format.
-  """
-  print("----------OP SHARDING----------")
-  # print("Type: ", op_sharding.type())
-  # print("Tile Shape: ", op_sharding.tile_shape())
-  print("Tile Assignment Dimensions: ", op_sharding.tile_assignment_dimensions())
-  print("Tile Assignment Devices: ", op_sharding.tile_assignment_devices())
-  print("Iota Reshape Dims: ", op_sharding.iota_reshape_dims())
-  print("Iota Transpose Perm: ", op_sharding.iota_transpose_perm())
-  print("---------\OP SHARDING----------")
-
 def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
                   partition_spec: PartitionSpec) -> XLAShardedTensor:
   """
@@ -729,9 +707,10 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
     t.shard_(NamedSharding(jmesh, P(*partition_spec)))
     return t
 
-  # op_sharding = mesh.get_op_sharding(partition_spec)
-  op_sharding = mesh.get_op_sharding_v2(partition_spec)
-  print_op_sharding(op_sharding)
+  if os.environ.get('CONVERT_SHLO_TO_SHARDY', False):
+    op_sharding = mesh.get_op_sharding_v2(partition_spec)
+  else:
+    op_sharding = mesh.get_op_sharding(partition_spec)
   annotate_func = torch_xla._XLAC._xla_mark_sharding
   annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)

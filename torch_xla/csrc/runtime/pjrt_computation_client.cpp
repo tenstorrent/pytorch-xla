@@ -13,6 +13,7 @@
 #include "torch_xla/csrc/runtime/env_vars.h"
 #include "torch_xla/csrc/runtime/pjrt_registry.h"
 #include "torch_xla/csrc/runtime/stablehlo_helper.h"
+#include "torch_xla/csrc/runtime/sys_util.h"
 #include "torch_xla/csrc/runtime/tensor_source.h"
 #include "torch_xla/csrc/runtime/tf_logging.h"
 #include "torch_xla/csrc/runtime/util.h"
@@ -630,13 +631,9 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       mlir::ModuleOp mlir_module =
           mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
       ConvertHloToStableHlo(instance.computation.mutable_proto(), &mlir_module);
-      std::cout << "[HET DEBUG PJRT] StableHLO module before:\n";
-      mlir_module.print(llvm::outs());
-      llvm::outs() << "\n";
-      ConvertStableHloToSdy(&mlir_module);
-      std::cout << "[HET DEBUG PJRT] StableHLO module after:\n";
-      mlir_module.print(llvm::outs());
-      llvm::outs() << "\n";
+      if (runtime::sys_util::GetEnvBool("CONVERT_SHLO_TO_SHARDY", false)) {
+        ConvertStableHloToSdy(&mlir_module);
+      }
       executable = util::RaisePythonValueErrorOnFailure([&] {
         return fake_xla_compile_
                    ? fake_xla_compile_()

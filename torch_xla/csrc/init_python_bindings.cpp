@@ -1518,47 +1518,7 @@ void InitXlaModuleBindings(py::module m) {
                    const py::list& transpose_perm) {
         return ShardingUtil::CreateIotaOpSharding(
             dims, reshape_dims, transpose_perm);
-      })
-      .def("type",
-           [](const xla::OpSharding& sharding) -> xla::OpSharding::Type {
-             return sharding.type();
-           })
-      .def("tile_shape",
-           [](const xla::OpSharding& sharding) -> xla::ShapeProto {
-             return sharding.tile_shape();
-           })
-      .def("tile_assignment_dimensions",
-           [](const xla::OpSharding& sharding) -> py::list {
-             py::list dimensions;
-             for (int64_t dim : sharding.tile_assignment_dimensions()) {
-               dimensions.append(dim);
-             }
-             return dimensions;
-           })
-      .def("tile_assignment_devices",
-           [](const xla::OpSharding& sharding) -> py::list {
-             py::list devices;
-             for (int64_t device : sharding.tile_assignment_devices()) {
-               devices.append(device);
-             }
-             return devices;
-           })
-      .def("iota_reshape_dims",
-           [](const xla::OpSharding& sharding) -> py::list {
-             py::list iota_reshape_dims;
-             for (int64_t dim : sharding.iota_reshape_dims()) {
-               iota_reshape_dims.append(dim);
-             }
-             return iota_reshape_dims;
-           })
-      .def("iota_transpose_perm",
-           [](const xla::OpSharding& sharding) -> py::list {
-             py::list iota_transpose_perms;
-             for (int32_t perm : sharding.iota_transpose_perm()) {
-               iota_transpose_perms.append(perm);
-             }
-             return iota_transpose_perms;
-           });
+      });
 
   // Define the _XLAC.PjRtPlugin class.
   PythonScope<py::class_<runtime::PjRtPlugin, PyPjRtPlugin,

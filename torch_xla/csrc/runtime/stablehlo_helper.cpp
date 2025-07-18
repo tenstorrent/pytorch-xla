@@ -90,9 +90,7 @@ static absl::Status mhloToStablehloHelper(mlir::ModuleOp* mlir_module,
       torch_xla::runtime::CreateRemoveXlaMarkTensorOpsPass());
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
-  // std::cout << "[HET DEBUG TORCH-XLA] adding gspmd->shardy pass\n";
-  // pm.addPass(xla::sdy::createStablehloRoundTripShardMapImportPass());
-  // std::cout << "[HET DEBUG TORCH-XLA] added gspmd->shardy pass\n";
+
   if (!mlir::succeeded(pm.run(*mlir_module))) {
     return absl::Status(
         absl::StatusCode::kInternal,
