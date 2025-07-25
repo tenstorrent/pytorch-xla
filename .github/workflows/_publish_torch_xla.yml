@@ -1,0 +1,63 @@
+name: publish-wheel
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        required: true
+        type: string
+        description: 'Name of the artifact containing the wheel'
+
+jobs:
+
+  publish-wheels:
+    name: "Publish wheels to internal PyPI"
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.artifact_name }}" ]; then
+            echo "ERROR: artifact_name input is empty or not provided!"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.PYPI_ROLE }}
+          aws-region: ${{ secrets.PYPI_REGION }}
+
+      - name: Install s3pypi
+        run: |
+          pip install s3pypi
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ./dist
+
+      - name: Publish wheels to internal PyPI
+        run: |
+          wheel_count=$(find ./dist -type f -name "torch_xla*.whl" | wc -l)
+          if [ "$wheel_count" -ne 1 ]; then
+            echo "ERROR: Expected exactly 1 wheel file, but found $wheel_count!"
+            exit 1
+          fi
+ 
+          wheel_file=$(find ./dist -type f -name "torch_xla*.whl" -exec realpath {} \;)
+          wheel_basename=$(basename "$wheel_file")
+          echo "Wheel file found, publishing $wheel_basename to PyPi server"
+
+          s3pypi upload "$wheel_file" --bucket ${{ secrets.PYPI_BUCKET }} --put-root-index --force
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to upload $wheel_basename to S3 PyPI"
+            exit 1
+          fi
+          echo "Successfully uploaded $wheel_basename"
