@@ -1,0 +1,37 @@
+name: Build and Publish PyTorch/XLA 
+on:
+  push:
+    branches:
+      - master
+      - r[0-9]+.[0-9]+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}-${{ github.event_name == 'schedule' }}
+  cancel-in-progress: true
+
+jobs:
+  check_code_changes:
+    name: Check Code Changes
+    uses: ./.github/workflows/_check_code_changes.yml
+    with:
+      event_name: ${{ github.event_name }}
+      base_sha: ${{ github.event.before }}
+      head_sha: ${{ github.sha }}
+
+  build-torch-xla:
+    name: "Build PyTorch/XLA"
+    uses: ./.github/workflows/_buid_torch_xla_3.10.yml
+    needs: check_code_changes
+    outputs:
+      artifact_name: ${{ jobs.build-torch-xla.outputs.artifact_name }}
+
+  publish-torch-xla:
+    name: "Publish PyTorch/XLA"
+    if: needs.build-torch-xla.outputs.artifact_name != ''
+    uses: ./.github/workflows/_publish_torch_xla.yml
+    needs: build-torch-xla
+    with:
+      artifact_name: ${{ needs.build-torch-xla.outputs.artifact_name }}
+    secrets:
+      gcloud-service-key: ${{ secrets.GCLOUD_SERVICE_KEY }}

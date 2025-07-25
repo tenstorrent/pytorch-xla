@@ -1,0 +1,55 @@
+name: publish-wheel
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        required: true
+        type: string
+        description: 'Name of the artifact containing the wheel'
+    secrets:
+      pypi-token:
+        required: true
+        description: 'PyPI API token'
+
+jobs:
+
+  publish-wheels:
+    name: "Publish wheels to internal PyPI"
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for AWS OIDC
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.PYPI_ROLE }}
+          aws-region: ${{ secrets.PYPI_REGION }}
+
+      - name: Install s3pypi
+        run: |
+          pip install s3pypi
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./wheels
+
+      - name: Publish wheels to internal PyPI
+        run: |
+          timestamp=$(date +%Y%m%d)
+          found_wheel_files=$(find ./wheels -type f -name "*.whl" -exec realpath {} \;)
+          for wheel in $found_wheel_files; do
+            wheel_basename=$(basename "$wheel")
+            new_wheel_name=$(echo "$wheel_basename" | sed -E 's/^([^-]+)-([0-9]+\.[0-9]+\.[0-9]+)\+git[a-f0-9]+(-.+)$/\1-\2.dev'$timestamp'\3/')
+            new_wheel_path="./wheels/$new_wheel_name"
+            cp "$wheel" "$new_wheel_path"
+            
+            echo "Publishing wheel: $wheel"
+            s3pypi upload "$wheel" --put-root-index --bucket --force ${{ secrets.PYPI_BUCKET }}
+          done
