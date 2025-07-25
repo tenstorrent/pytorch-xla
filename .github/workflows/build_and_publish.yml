@@ -1,0 +1,33 @@
+name: Build and Publish PyTorch/XLA 
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+
+jobs:
+  check_code_changes:
+    name: Check Code Changes
+    uses: ./.github/workflows/_check_code_changes.yml
+    with:
+      event_name: ${{ github.event_name }}
+      base_sha: ${{ github.event.before }}
+      head_sha: ${{ github.sha }}
+
+  build-torch-xla:
+    name: "Build PyTorch/XLA for Python 3.10"
+    if: needs.check_code_changes.outputs.has_code_changes == 'true'
+    uses: ./.github/workflows/_build_torch_xla_3.10.yml
+    needs: check_code_changes
+
+  publish-torch-xla:
+    name: "Publish PyTorch/XLA"
+    uses: ./.github/workflows/_publish_torch_xla.yml
+    needs: build-torch-xla
+    secrets: inherit
+    with:
+      artifact_name: ${{ needs.build-torch-xla.outputs.artifact_name }}
