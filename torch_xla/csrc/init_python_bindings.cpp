@@ -1467,8 +1467,8 @@ void InitXlaModuleBindings(py::module m) {
                    const py::list& group_assignment,
                    const py::list& replication_groups, int sharding_type,
                    bool minibatch) {
-        xla::Shape global_shape = ShardingUtil::GetAdjustedGlobalShape(tensor,
-                                                                    minibatch);
+        xla::Shape global_shape =
+            ShardingUtil::GetAdjustedGlobalShape(tensor, minibatch);
         return std::make_shared<XLATensor::ShardingSpec>(
             ShardingUtil::CreateOpSharding(
                 tile_assignment, group_assignment, replication_groups,
@@ -1476,10 +1476,10 @@ void InitXlaModuleBindings(py::module m) {
             global_shape, minibatch);
       })
       .def_init([](at::Tensor tensor, const py::list& dims,
-                   const py::list& reshape_dims,
-                   const py::list& transpose_perm, bool minibatch) {
-        xla::Shape global_shape = ShardingUtil::GetAdjustedGlobalShape(tensor,
-                                                            minibatch);
+                   const py::list& reshape_dims, const py::list& transpose_perm,
+                   bool minibatch) {
+        xla::Shape global_shape =
+            ShardingUtil::GetAdjustedGlobalShape(tensor, minibatch);
         return std::make_shared<XLATensor::ShardingSpec>(
             ShardingUtil::CreateIotaOpSharding(dims, reshape_dims,
                                                transpose_perm),

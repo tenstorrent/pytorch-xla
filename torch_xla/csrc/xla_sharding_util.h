@@ -156,7 +156,8 @@ class ShardingUtil {
   static void SetAutoSharding();
   static bool GetAutoSharding();
 
-  static xla::Shape GetAdjustedGlobalShape(const at::Tensor& tensor, bool minibatch);
+  static xla::Shape GetAdjustedGlobalShape(const at::Tensor& tensor,
+                                           bool minibatch);
 };
 
 }  // namespace torch_xla

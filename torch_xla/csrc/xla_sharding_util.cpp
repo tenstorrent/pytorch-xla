@@ -883,7 +883,8 @@ bool ShardingUtil::GetAutoSharding() {
   return use_auto_sharding;
 }
 
-xla::Shape ShardingUtil::GetAdjustedGlobalShape(const at::Tensor& tensor, bool minibatch) {
+xla::Shape ShardingUtil::GetAdjustedGlobalShape(const at::Tensor& tensor,
+                                                bool minibatch) {
   xla::Shape global_shape = CreateComputationShapeFromTensor(tensor, nullptr);
   if (minibatch) {
     int num_local_devices =

@@ -178,9 +178,9 @@ class Mesh:
     # 2. If the product of dims is less than the total number of devices,
     #    append the sizes of the unused mesh axes.
     if math.prod(dims) < math.prod(self.mesh_shape):
-        for i in range(len(self.mesh_shape)):
-            if i not in used_axes:
-                dims.append(self.mesh_shape[i])
+      for i in range(len(self.mesh_shape)):
+        if i not in used_axes:
+          dims.append(self.mesh_shape[i])
 
     # 3. Calculate transpose_perm (sharded axes first, then unused axes).
     transpose_perm = list(used_axes.keys())
