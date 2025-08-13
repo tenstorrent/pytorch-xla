@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 jobs:
   build-wheels:
-    runs-on: wormhole_b0
+    runs-on: ubuntu-latest
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
