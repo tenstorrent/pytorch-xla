@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 jobs:
   build-wheels:
-    runs-on: ubuntu-latest
+    runs-on: tt-ubuntu-2204-large-stable
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
