@@ -53,6 +53,9 @@ jobs:
           python3.10 setup.py bdist_wheel
           python3.10 setup.py develop
 
+          # create debug whl
+          export DEBUG=1
+
           # Build PyTorch/XLA
           cd xla/
           python3.10 setup.py bdist_wheel
