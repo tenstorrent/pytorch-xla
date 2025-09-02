@@ -25,7 +25,8 @@ xla::XlaComputation CreateCrsComputation(const xla::Shape& shape) {
   xla::XlaBuilder builder("CrsComputation");
   xla::XlaOp x = xla::Parameter(&builder, 0, shape, "x");
   xla::CrossReplicaSum(x);
-  return GetValueOrThrow(builder.Build());
+  XLA_ASSIGN_OR_THROW(xla::XlaComputation crs_computation, builder.Build());
+  return crs_computation;
 }
 
 void TestSingleReplication(
@@ -65,13 +66,14 @@ void TestSingleReplication(
   torch_xla::runtime::ComputationClient::ExecuteComputationOptions exec_options;
   for (size_t i = 0; i < device_strings.size(); ++i) {
     auto executor = [&, i]() {
-      results[i] =
+      XLA_ASSIGN_OR_THROW(
+          results[i],
           torch_xla::runtime::GetComputationClientOrDie()->ExecuteComputation(
               *compiled_computations[i],
               {std::dynamic_pointer_cast<
                   torch_xla::runtime::ComputationClient::Data>(
                   tensors_data[i])},
-              device_strings[i], exec_options);
+              device_strings[i], exec_options));
       counter.DecrementCount();
     };
     torch_xla::thread::Schedule(std::move(executor));
@@ -79,9 +81,9 @@ void TestSingleReplication(
   counter.Wait();
 
   for (size_t i = 0; i < results.size(); ++i) {
-    std::vector<xla::Literal> literals =
-        torch_xla::runtime::GetComputationClientOrDie()->TransferFromDevice(
-            results[i]);
+    XLA_ASSIGN_OR_THROW(
+        std::vector<xla::Literal> literals,
+        runtime::GetComputationClientOrDie()->TransferFromDevice(results[i]));
     ASSERT_EQ(literals.size(), 1);
 
     // The result must be the original tensor value, multiplied by the number of

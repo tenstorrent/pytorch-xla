@@ -64,6 +64,7 @@ ptxla_cc_library(
         "torch_util.cpp",
         "view.cpp",
         "xla_backend_impl.cpp",
+        "xla_generator.cpp",
         "xla_graph_executor.cpp",
         "xla_lower_util.cpp",
         "xla_op_builder.cpp",
@@ -76,7 +77,6 @@ ptxla_cc_library(
     hdrs = [
         "aten_autograd_ops.h",
         "aten_fallback.h",
-        "aten_cuda_functions.h",
         "aten_xla_bridge.h",
         "batch_norm.h",
         "convert_ops.h",
@@ -107,6 +107,7 @@ ptxla_cc_library(
         "torch_util.h",
         "view.h",
         "xla_backend_impl.h",
+        "xla_generator.h",
         "xla_graph_executor.h",
         "xla_lower_util.h",
         "xla_op_builder.h",
@@ -280,6 +281,7 @@ ptxla_cc_library(
         "//torch_xla/csrc/runtime:xla_coordinator",
         "//torch_xla/csrc/runtime:xla_util",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:variant",
@@ -361,22 +363,13 @@ ptxla_cc_library(
     ],
 )
 
-ptxla_cc_library(
-    name = "aten_cuda_functions",
-    srcs = ["aten_cuda_functions.cpp"],
-    hdrs = ["aten_cuda_functions.h"],
-    deps = [
-        "@local_config_python//:python_headers",
-        "@pybind11//:pybind11_embed",
-    ],
-)
-
 cc_library(
     name = "status",
     srcs = ["status.cpp"],
     hdrs = ["status.h"],
     deps = [
         "@torch//:headers",
+        "@tsl//tsl/platform:stacktrace",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
     ],

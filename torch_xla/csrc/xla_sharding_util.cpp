@@ -220,18 +220,21 @@ bool ShardingUtil::EqualOpShardings(const xla::OpSharding& a,
 
 xla::OpSharding ShardingUtil::CreateIotaOpSharding(
     const py::list& dims, const py::list& reshape_dims,
-    const py::list& transpose_perm) {
+    const py::list& transpose_perm, const py::list& types) {
+  TORCH_LAZY_COUNTER("CreateIotaOpSharding", 1);
   auto dims_vec = dims.cast<std::vector<int64_t>>();
   auto reshape_dims_vec = reshape_dims.cast<std::vector<int64_t>>();
   auto transpose_perm_vec = transpose_perm.cast<std::vector<int>>();
-  std::vector<xla::OpSharding::Type> subgroup_types;
-  if (dims_vec.size() > transpose_perm.size()) {
-    subgroup_types.push_back(xla::OpSharding::REPLICATED);
+  std::vector<xla::OpSharding::Type> subgroup_types_vec;
+  for (auto type : types) {
+    subgroup_types_vec.push_back(
+        static_cast<xla::OpSharding::Type>(type.cast<int>()));
   }
+  CHECK_EQ(reshape_dims_vec.size(), transpose_perm_vec.size());
   return xla::HloSharding::Subgroup(
              xla::TileAssignment(dims_vec, reshape_dims_vec,
                                  transpose_perm_vec),
-             subgroup_types)
+             subgroup_types_vec)
       .ToProto();
 }
 
@@ -784,7 +787,7 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
       << "Please enable SPMD via `torch_xla.runtime.use_spmd()`";
   XLA_CHECK(sharding.type() != xla::OpSharding::UNKNOWN)
       << "Can't explicilty annotate with UNKNOWN sharding type.";
-  XLATensorPtr xtensor = bridge::GetXlaTensor(input);
+  XLA_ASSIGN_OR_THROW(XLATensorPtr xtensor, bridge::GetXlaTensor(input));
 
   // For Non DeviceData IR values, we directly attach the sharding spec to the
   // xtensor.

@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/ascii.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
@@ -160,8 +161,6 @@ IfrtComputationClient::Create() {
 }
 
 IfrtComputationClient::~IfrtComputationClient() {
-  // In the GPU case, the PjRtClient depends on the DistributedRuntimeClient
-  // tracked in XlaCoordinator, so the PjRtClient must be destroyed first.
   client_ = nullptr;
   coordinator_ = nullptr;
 }
@@ -176,7 +175,8 @@ void IfrtComputationClient::InitializeCoordinator(int global_rank,
                                                   std::string port) {
   XLA_CHECK(coordinator_ == nullptr)
       << "Can only initialize the XlaCoordinator once.";
-  coordinator_ = GetValueOrThrow(
+  XLA_ASSIGN_OR_THROW(
+      coordinator_,
       XlaCoordinator::Create(global_rank, world_size, master_addr, port));
 }
 
@@ -217,7 +217,8 @@ std::vector<ComputationClient::DataPtr> IfrtComputationClient::GetDataShards(
     std::vector<tsl::RCReference<xla::ifrt::Array>> arrays =
         ifrt_data->buffer
             ->DisassembleIntoSingleDeviceArrays(
-                xla::ifrt::ArrayCopySemantics::kAlwaysCopy)
+                xla::ifrt::ArrayCopySemantics::kAlwaysCopy,
+                xla::ifrt::SingleDeviceShardSemantics::kAddressableShards)
             .value();
 
     for (auto array : arrays) {
@@ -307,8 +308,7 @@ std::vector<ComputationClient::DataPtr> IfrtComputationClient::TransferToDevice(
                     ifrt_device, xla::ifrt::MemoryKind()),
                 xla::ifrt::Client::HostBufferSemantics::
                     kImmutableUntilTransferCompletes,
-                [tensor, timed]() { /* frees tensor and timer */ },
-                client_->CreateUserContext())
+                [tensor, timed]() { /* frees tensor and timer */ })
             .value();
 
     ComputationClient::DataPtr data =
@@ -394,10 +394,10 @@ tsl::RCReference<xla::ifrt::Array> IfrtComputationClient::ReplicateShardedData(
   auto instruction = XlaBuilderFriend::GetInstruction(y);
   *instruction->mutable_sharding() = xla::HloSharding::Replicate().ToProto();
 
-  xla::XlaComputation computation =
-      GetValueOrThrow(builder.Build(/*remove_dynamic_dimensions=*/false));
-  xla::ProgramShape program_shape =
-      GetValueOrThrow(computation.GetProgramShape());
+  XLA_ASSIGN_OR_THROW(xla::XlaComputation computation,
+                      builder.Build(/*remove_dynamic_dimensions=*/false));
+  XLA_ASSIGN_OR_THROW(xla::ProgramShape program_shape,
+                      computation.GetProgramShape());
 
   std::string device = GetDefaultDevice();
   std::vector<torch_xla::runtime::ComputationClient::CompileInstance> instances;
@@ -416,8 +416,9 @@ tsl::RCReference<xla::ifrt::Array> IfrtComputationClient::ReplicateShardedData(
   torch_xla::runtime::ComputationClient::ExecuteReplicatedOptions
       execute_options;
 
-  auto sharded_results = ExecuteReplicated(*computations.front(), {{handle}},
-                                           GetLocalDevices(), execute_options);
+  XLA_ASSIGN_OR_THROW(std::vector<ComputationClient::DataPtr> sharded_results,
+                      ExecuteReplicated(*computations.front(), {{handle}},
+                                        GetLocalDevices(), execute_options));
   auto replicated_output =
       std::dynamic_pointer_cast<IfrtData>(sharded_results[0])
           ->buffer->FullyReplicatedShard(
@@ -436,8 +437,8 @@ std::shared_ptr<xla::PjRtBuffer> IfrtComputationClient::GetPjRtBuffer(
   XLA_ERROR() << __FUNCTION__ << " not implemented";
 }
 
-std::vector<xla::Literal> IfrtComputationClient::TransferFromDevice(
-    absl::Span<const DataPtr> handles) {
+absl::StatusOr<std::vector<xla::Literal>>
+IfrtComputationClient::TransferFromDevice(absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("IfrtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
@@ -455,9 +456,9 @@ std::vector<xla::Literal> IfrtComputationClient::TransferFromDevice(
     auto& literal = literals.emplace_back(
         xla::ShapeUtil::DeviceShapeToHostShape(ifrt_data->shape()));
     std::vector<int64_t> byte_strides(literal.shape().dimensions_size());
-    XLA_CHECK_OK(xla::ShapeUtil::ByteStrides(literal.shape(),
-                                             absl::MakeSpan(byte_strides)));
-    XLA_CHECK_OK(
+    XLA_RETURN_IF_ERROR(xla::ShapeUtil::ByteStrides(
+        literal.shape(), absl::MakeSpan(byte_strides)));
+    XLA_RETURN_IF_ERROR(
         replicated_array
             ->CopyToHostBuffer(literal.untyped_data(), byte_strides,
                                xla::ifrt::ArrayCopySemantics::kAlwaysCopy)
@@ -515,14 +516,17 @@ std::vector<ComputationClient::ComputationPtr> IfrtComputationClient::Compile(
         mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
     torch_xla::ConvertHloToStableHlo(instance.computation.mutable_proto(),
                                      &mlir_module);
-    std::shared_ptr<xla::ifrt::LoadedExecutable> executable =
-        GetValueOrThrow(client_->GetDefaultCompiler()->CompileAndLoad(
+    XLA_ASSIGN_OR_THROW(
+        std::shared_ptr<xla::ifrt::LoadedExecutable> executable,
+        client_->GetDefaultCompiler()->CompileAndLoad(
             std::make_unique<xla::ifrt::HloProgram>(mlir_module),
             std::make_unique<xla::ifrt::XlaCompileOptions>(compile_options,
                                                            devices_list)));
     StableHloCompileCounter()->AddValue(1);
 
-    const auto& hlo_modules = GetValueOrThrow(executable->GetHloModules());
+    XLA_ASSIGN_OR_THROW(
+        const std::vector<std::shared_ptr<xla::HloModule>>& hlo_modules,
+        executable->GetHloModules());
 
     std::shared_ptr<IfrtComputation> ifrt_computation =
         std::make_shared<IfrtComputation>(
@@ -537,16 +541,16 @@ std::vector<ComputationClient::ComputationPtr> IfrtComputationClient::Compile(
   return computations;
 }
 
-std::vector<ComputationClient::DataPtr>
+absl::StatusOr<std::vector<ComputationClient::DataPtr>>
 IfrtComputationClient::ExecuteComputation(
     const ComputationClient::Computation& computation,
     absl::Span<const ComputationClient::DataPtr> arguments,
     const std::string& device, const ExecuteComputationOptions& options) {
   // TODO: Implement sharded exec in IFRT
-  XLA_ERROR() << __FUNCTION__ << " not implemented";
+  return absl::UnimplementedError("ExecuteComputation not implemented");
 }
 
-std::vector<ComputationClient::DataPtr>
+absl::StatusOr<std::vector<ComputationClient::DataPtr>>
 IfrtComputationClient::ExecuteReplicated(
     const ComputationClient::Computation& computation,
     const absl::Span<const ComputationClient::DataPtr> arguments,
@@ -591,11 +595,10 @@ IfrtComputationClient::ExecuteReplicated(
   TF_VLOG(5) << "ExecuteReplicated acquiring IFRT device lock for "
              << spmd_device_str << " Done";
 
-  xla::ifrt::LoadedExecutable::ExecuteResult result =
-      ifrt_computation.executable
-          ->Execute(absl::MakeSpan(argument_handles), execute_options,
-                    std::nullopt)
-          .value();
+  XLA_ASSIGN_OR_RETURN(
+      xla::ifrt::LoadedExecutable::ExecuteResult result,
+      ifrt_computation.executable->Execute(absl::MakeSpan(argument_handles),
+                                           execute_options, std::nullopt));
 
   result.status.OnReady(std::move([timed, op_tracker = std::move(op_tracker)](
                                       absl::Status status) mutable {
@@ -612,7 +615,7 @@ IfrtComputationClient::ExecuteReplicated(
           ? *ifrt_computation.output_shardings_
           : std::vector(outputs.size(),
                         xla::HloSharding::Replicate().ToProto());
-  XLA_CHECK_EQ(output_shardings.size(), outputs.size());
+  ABSL_CHECK_EQ(output_shardings.size(), outputs.size());
 
   std::vector<ComputationClient::DataPtr> data_handles(outputs.size());
   {
@@ -654,6 +657,10 @@ std::vector<std::string> IfrtComputationClient::GetLocalDevices() const {
 
 std::vector<std::string> IfrtComputationClient::GetAllDevices() const {
   return IfrtDevicesToString(client_->devices());
+}
+
+std::string_view IfrtComputationClient::GetPlatformVersion() const {
+  return client_->platform_version();
 }
 
 int IfrtComputationClient::GetNumProcesses() const {
