@@ -113,13 +113,13 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 # 4. After the local build succeeds, create a PR and wait for the CI result. Fix
 #    CI errors as needed until all required checks pass.
 
-USE_NIGHTLY = True  # Whether to use nightly or stable libtpu and JAX.
+USE_NIGHTLY = False  # Whether to use nightly or stable libtpu and JAX.
 
 _libtpu_version = '0.0.18'
 _libtpu_date = '20250617'
 
-_jax_version = '0.6.2'
-_jaxlib_version = '0.6.2'
+_jax_version = '0.7.1'
+_jaxlib_version = '0.7.1'
 _jax_date = '20250617'  # Date for jax and jaxlib.
 
 if USE_NIGHTLY:
@@ -135,8 +135,7 @@ else:
   _libtpu_wheel_name = f'libtpu-{_libtpu_version}-py3-none-manylinux_2_31_{platform_machine}'
   _libtpu_storage_directory = 'libtpu-lts-releases'
 
-_libtpu_storage_path = f'https://storage.googleapis.com/{_libtpu_storage_directory}/wheels/libtpu/{_libtpu_wheel_name}.whl'
-
+_libtpu_storage_path = f'https://us-python.pkg.dev/ml-oss-artifacts-published/jax/libtpu/{_libtpu_wheel_name}.whl'
 
 def _get_build_mode():
   for i in range(1, len(sys.argv)):
@@ -423,22 +422,10 @@ class Develop(develop.develop):
 
 
 def _get_jax_install_requirements():
-  if not USE_NIGHTLY:
-    # Stable versions of JAX can be directly installed from PyPI.
-    return [
-        f'jaxlib=={_jaxlib_version}',
-        f'jax=={_jax_version}',
-    ]
-
-  # Install nightly JAX libraries from the JAX package registries.
-  jax = f'jax @ https://us-python.pkg.dev/ml-oss-artifacts-published/jax-public-nightly-artifacts-registry/jax/jax-{_jax_version}-py3-none-any.whl'
-
-  jaxlib = []
-  for python_minor_version in [9, 10, 11, 12]:
-    jaxlib.append(
-        f'jaxlib @ https://us-python.pkg.dev/ml-oss-artifacts-published/jax-public-nightly-artifacts-registry/jaxlib/jaxlib-{_jaxlib_version}-cp3{python_minor_version}-cp3{python_minor_version}-manylinux2014_x86_64.whl ; python_version == "3.{python_minor_version}"'
-    )
-  return [jax] + jaxlib
+  return [
+      f'jaxlib=={_jaxlib_version}',
+      f'jax=={_jax_version}',
+  ]
 
 
 setup(
