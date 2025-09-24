@@ -24,48 +24,64 @@ jobs:
     outputs:
       artifact_name: ${{ steps.set_upload_name.outputs.artifact_name }}
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6 GB
+          tool-cache: false
+
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       - name: "Build Torch/XLA wheel"
         id: build_wheels
         run: |
-          cmake --version
-          apt-get update && apt-get install -y curl git build-essential
+            cmake --version
+            apt-get update && apt-get install -y curl git build-essential
 
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
+            # Clean up any existing pyenv installation
+            rm -rf $HOME/.pyenv
 
-          curl https://pyenv.run | bash
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init -)"
-          pyenv install 3.10.12
-          pyenv global 3.10.12
-          ln -sf $HOME/.pyenv/versions/3.10.12/bin/python3.10 /usr/local/bin/python3.10
+            curl https://pyenv.run | bash
+            export PATH="$HOME/.pyenv/bin:$PATH"
+            eval "$(pyenv init -)"
+            pyenv install 3.10.12
+            pyenv global 3.10.12
+            ln -sf $HOME/.pyenv/versions/3.10.12/bin/python3.10 /usr/local/bin/python3.10
 
-          # Install essential packages for Python 3.10
-          python3.10 -m pip install --upgrade pip
-          python3.10 -m pip install pyyaml setuptools wheel numpy typing_extensions requests
+            # Install essential packages for Python 3.10
+            python3.10 -m pip install --upgrade pip
+            python3.10 -m pip install pyyaml setuptools wheel numpy typing_extensions requests
 
-          cd /tmp
-          git clone --recursive --branch v${{ inputs.torch_version || '2.7.0' }} https://github.com/pytorch/pytorch.git
-          cd pytorch/
-          git clone --recursive https://github.com/tenstorrent/pytorch-xla.git xla
+            cd /tmp
+            git clone --recursive --branch v${{ inputs.torch_version || '2.7.0' }} https://github.com/pytorch/pytorch.git
+            cd pytorch/
+            git clone --recursive https://github.com/tenstorrent/pytorch-xla.git xla
 
-          # copy pre-built wheels from cache
-          python3.10 setup.py bdist_wheel
-          python3.10 setup.py develop
+            # copy pre-built wheels from cache
+            python3.10 setup.py bdist_wheel
+            python3.10 setup.py develop
 
-          # create debug whl
-          export DEBUG=1
+            # create debug whl
+            export DEBUG=1
 
-          # Build PyTorch/XLA
-          cd xla/
-          python3.10 setup.py bdist_wheel
+            # Build PyTorch/XLA
+            cd xla/
+            python3.10 setup.py bdist_wheel
 
-          # Collect wheels
-          mkdir -p /dist
-          cp dist/*.whl /dist/
+            # Collect wheels
+            mkdir -p /dist
+            cp dist/*.whl /dist/
 
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
+            # Clean up any existing pyenv installation
+            rm -rf $HOME/.pyenv
 
       - name: "Upload Wheels Artifact"
         id: upload
@@ -73,7 +89,7 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: /dist/*.whl
-      
+
       - name: Set artifact name output
         id: set_upload_name
         run: echo "artifact_name=${{ env.ARTIFACT_NAME }}" >> $GITHUB_OUTPUT
