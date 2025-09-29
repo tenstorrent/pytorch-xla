@@ -1,0 +1,26 @@
+diff --git a/xla/hlo/ir/hlo_sharding.cc b/xla/hlo/ir/hlo_sharding.cc
+index 6f0b10d8ef..5b63793a01 100644
+--- a/xla/hlo/ir/hlo_sharding.cc
++++ b/xla/hlo/ir/hlo_sharding.cc
+@@ -157,10 +157,7 @@ HloSharding HloSharding::PartialTile(
+     const TileAssignment& tile_assignment_last_dim_replicate,
+     absl::Span<const OpMetadata> metadata) {
+   const size_t num_elements = tile_assignment_last_dim_replicate.num_elements();
+-  if (tile_assignment_last_dim_replicate.num_dimensions() == 1 ||
+-      tile_assignment_last_dim_replicate.dimensions().back() == num_elements) {
+-    return Replicate(metadata);
+-  }
++
+   if (tile_assignment_last_dim_replicate.dimensions().back() == 1) {
+     auto new_tile_dims = tile_assignment_last_dim_replicate.dimensions();
+     new_tile_dims.remove_suffix(1);
+@@ -223,9 +220,6 @@ HloSharding HloSharding::Subgroup(
+     if (subgroup_types[0] == OpSharding::MANUAL) {
+       return Manual(metadata);
+     }
+-    if (subgroup_types[0] == OpSharding::REPLICATED) {
+-      return Replicate(metadata);
+-    }
+   }
+   // Normalize the subgroups to simplify two cases:
+   //   - Remove trivial dims of size 1.

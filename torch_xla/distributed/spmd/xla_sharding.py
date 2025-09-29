@@ -209,9 +209,6 @@ class Mesh:
     """
     if len(partition_spec) == 0:
       return torch_xla._XLAC.OpSharding([], [], [], ShardingType.REPLICATED)
-    sharding_type = _get_sharding_type(partition_spec, self.size())
-    if sharding_type not in (ShardingType.TILED, ShardingType.PARTIAL):
-      return torch_xla._XLAC.OpSharding([], [], [], sharding_type)
 
     dims, reshape_dims, transpose_perm, types = self._get_op_sharding_args_v2(
         partition_spec)
