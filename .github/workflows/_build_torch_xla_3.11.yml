@@ -25,6 +25,7 @@ jobs:
       artifact_name: ${{ steps.set_upload_name.outputs.artifact_name }}
     steps:
       - name: "Build Torch/XLA wheel"
+        shell: bash
         id: build_wheels
         run: |
           cmake --version
@@ -49,9 +50,16 @@ jobs:
           cd pytorch/
           git clone --recursive https://github.com/tenstorrent/pytorch-xla.git xla
 
-          # copy pre-built wheels from cache
-          python3.11 setup.py bdist_wheel
-          python3.11 setup.py develop
+
+          (
+            # Build PyTorch
+            # From https://docs.pytorch.org/FBGEMM/fbgemm/development/BuildInstructions.html, section "Build Issues with GCC 12+"
+            export CFLAGS+=" -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
+            export CXXFLAGS+=" -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
+            # copy pre-built wheels from cache
+            python3.11 setup.py bdist_wheel
+            python3.11 setup.py develop
+          )
 
           # Build PyTorch/XLA
           cd xla/
