@@ -7,6 +7,11 @@ on:
         required: false
         type: string
         default: '2.7.0'
+      xla_ref:
+        description: 'XLA reference to build (default: HEAD)'
+        required: false
+        type: string
+        default: 'HEAD'
     outputs:
       artifact_name:
         description: 'Name of uploaded wheels artifact'
@@ -18,6 +23,7 @@ jobs:
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
+      XLA_REF: ${{ inputs.xla_ref || github.event.pull_request.head.sha || github.ref }}
     container:
       image: us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/development:tpu
       options: --user root
@@ -27,7 +33,9 @@ jobs:
       - name: "Build Torch/XLA wheel"
         shell: bash
         id: build_wheels
+        timeout-minutes: 540  # 9 hours
         run: |
+          echo "Building Torch/XLA with XLA ref: $XLA_REF"
           cmake --version
           apt-get update && apt-get install -y curl git build-essential
 
@@ -50,7 +58,6 @@ jobs:
           cd pytorch/
           git clone --recursive https://github.com/tenstorrent/pytorch-xla.git xla
 
-
           (
             # Build PyTorch
             # From https://docs.pytorch.org/FBGEMM/fbgemm/development/BuildInstructions.html, section "Build Issues with GCC 12+"
@@ -63,6 +70,8 @@ jobs:
 
           # Build PyTorch/XLA
           cd xla/
+          git fetch --no-tags --depth=1 origin "${XLA_REF}"
+          git checkout --detach FETCH_HEAD
           python3.11 setup.py bdist_wheel
 
           # Collect wheels
