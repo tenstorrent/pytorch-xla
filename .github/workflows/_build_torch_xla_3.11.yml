@@ -20,6 +20,7 @@ on:
 jobs:
   build-wheels:
     runs-on: ubuntu-latest
+    timeout-minutes: 540  # 9 hours
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
