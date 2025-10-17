@@ -5,6 +5,7 @@ from typing import Union
 
 import torch_xla
 import torch_xla.core.xla_model as xm
+from torch_xla._internal.jax_workarounds import maybe_get_jax
 
 _TRACER_MARKED_STEP: bool = False
 
@@ -71,7 +72,7 @@ def trace(service_addr: str,
       in case of failures.
     host_tracer_level (int): CPU tracing level. Values are: 1 - critical info
       only, 2 - info, 3 - verbose.
-      device_tracer_level (int): Device (TPU/GPU) tracing level. Values are: 1 -
+      device_tracer_level (int): Device (TPU) tracing level. Values are: 1 -
       enabled, 0 - disabled.
     delay_ms (int): Specifies the services to start profiling delay_ms
       milliseconds after the current time.
@@ -128,13 +129,16 @@ class Trace(torch_xla._XLAC.profiler.TraceMe):
     self.scope = torch_xla._XLAC.profiler.scope_pusher(self.name)
     super().__enter__()
 
+    self._jax_scope = None
     # Also enter the JAX named scope, to support torchax lowering.
-    import jax
-    self._jax_scope = jax.named_scope(self.name)
-    self._jax_scope.__enter__()
+    if jax := maybe_get_jax(log=False):
+      self._jax_scope = jax.named_scope(self.name)
+      self._jax_scope.__enter__()
 
   def __exit__(self, type, value, traceback):
-    self._jax_scope.__exit__(type, value, traceback)
+    if self._jax_scope is not None:
+      self._jax_scope.__exit__(type, value, traceback)
+      self._jax_scope = None
     if getattr(self, 'scope', None):
       del self.scope
     super().__exit__(type, value, traceback)
@@ -214,7 +218,7 @@ _profile_state = _ProfileState()
 def start_trace(log_dir: Union[os.PathLike, str]) -> None:
   """Starts a profiler trace.
 
-  The trace will capture CPU, GPU, and/or TPU activity, including Python
+  The trace will capture CPU, and/or TPU activity, including Python
   functions and PyTorch/XLA on-device operations. Use :func:`stop_trace` to end
   the trace and save the results to ``log_dir``.
 

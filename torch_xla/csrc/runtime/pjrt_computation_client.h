@@ -65,7 +65,7 @@ class PjRtComputationClient : public ComputationClient {
       absl::Span<const DataPtr> handles,
       absl::Span<const xla::OpSharding> shardings) override;
 
-  std::vector<xla::Literal> TransferFromDevice(
+  absl::StatusOr<std::vector<xla::Literal>> TransferFromDevice(
       absl::Span<const DataPtr> handles) override;
 
   std::uintptr_t UnsafeBufferPointer(const DataPtr handle) override;
@@ -85,12 +85,12 @@ class PjRtComputationClient : public ComputationClient {
 
   ComputationPtr DeserializeComputation(const std::string& serialized) override;
 
-  std::vector<DataPtr> ExecuteComputation(
+  absl::StatusOr<std::vector<DataPtr>> ExecuteComputation(
       const Computation& computation, absl::Span<const DataPtr> arguments,
       const std::string& device,
       const ExecuteComputationOptions& options) override;
 
-  std::vector<DataPtr> ExecuteReplicated(
+  absl::StatusOr<std::vector<DataPtr>> ExecuteReplicated(
       const Computation& computation, absl::Span<const DataPtr> arguments,
       absl::Span<const std::string> devices,
       const ExecuteReplicatedOptions& options) override;
@@ -118,20 +118,11 @@ class PjRtComputationClient : public ComputationClient {
         xla::PjRtLocalDeviceId(local_device_id));
   }
 
-  std::intptr_t GetCudaStreamForDevice(int local_device_id) const override {
-    absl::StatusOr<xla::PjRtDevice*> pjrt_device =
-        client_->LookupAddressableDevice(
-            xla::PjRtLocalDeviceId(local_device_id));
-    XLA_CHECK(pjrt_device.ok()) << "Failed to get a PjRt device.";
-    absl::StatusOr<std::intptr_t> stream =
-        pjrt_device.value()->GetStreamForExternalReadyEvents();
-    XLA_CHECK(stream.ok()) << "Failed to get a stream.";
-    return stream.value();
-  }
-
   std::vector<std::string> GetLocalDevices() const override;
 
   std::vector<std::string> GetAllDevices() const override;
+
+  std::string_view GetPlatformVersion() const override;
 
   torch::lazy::hash_t HashCompilationEnv() override;
 
@@ -167,11 +158,14 @@ class PjRtComputationClient : public ComputationClient {
       absl::Span<xla::PjRtDevice* const> devices) const;
 
   void RegisterCustomCall(const std::string& fn_name, void* function_ptr,
-                          const std::string& platform) override;
+                          const std::string& platform) override {
+    XLA_ERROR() << __FUNCTION__ << " not implemented";
+  };
 
   void OnReadyCallback(DataPtr data,
                        const std::function<void()>& callback) override;
 
+  // See base class for semantics. This call overwrites previously set options.
   void SetCustomCompileOptions(
       const std::unordered_map<std::string, std::string>& options) override;
 

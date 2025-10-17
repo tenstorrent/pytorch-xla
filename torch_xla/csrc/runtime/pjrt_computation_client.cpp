@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/ascii.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
@@ -23,7 +24,6 @@
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/literal.h"
-#include "xla/pjrt/c/pjrt_c_api_gpu_extension.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
@@ -152,8 +152,6 @@ PjRtComputationClient::Create() {
 }
 
 PjRtComputationClient::~PjRtComputationClient() {
-  // In the GPU case, the PjRtClient depends on the DistributedRuntimeClient
-  // tracked in XlaCoordinator, so the PjRtClient must be destroyed first.
   client_ = nullptr;
   coordinator_ = nullptr;
 }
@@ -168,7 +166,8 @@ void PjRtComputationClient::InitializeCoordinator(int global_rank,
                                                   std::string port) {
   XLA_CHECK(coordinator_ == nullptr)
       << "Can only initialize the XlaCoordinator once.";
-  coordinator_ = GetValueOrThrow(
+  XLA_ASSIGN_OR_THROW(
+      coordinator_,
       XlaCoordinator::Create(global_rank, world_size, master_addr, port));
 }
 
@@ -367,10 +366,10 @@ PjRtComputationClient::ReplicateShardedData(
     auto instruction = XlaBuilderFriend::GetInstruction(y);
     *instruction->mutable_sharding() = xla::HloSharding::Replicate().ToProto();
 
-    xla::XlaComputation computation =
-        GetValueOrThrow(builder.Build(/*remove_dynamic_dimensions=*/false));
-    xla::ProgramShape program_shape =
-        GetValueOrThrow(computation.GetProgramShape());
+    XLA_ASSIGN_OR_THROW(xla::XlaComputation computation,
+                        builder.Build(/*remove_dynamic_dimensions=*/false));
+    XLA_ASSIGN_OR_THROW(xla::ProgramShape program_shape,
+                        computation.GetProgramShape());
 
     std::string device = GetDefaultDevice();
     std::vector<torch_xla::runtime::ComputationClient::CompileInstance>
@@ -386,9 +385,9 @@ PjRtComputationClient::ReplicateShardedData(
 
     torch_xla::runtime::ComputationClient::ExecuteReplicatedOptions
         execute_options;
-    auto sharded_results =
-        ExecuteReplicated(*computations.front(), {sharded_data},
-                          GetLocalDevices(), execute_options);
+    XLA_ASSIGN_OR_THROW(std::vector<ComputationClient::DataPtr> sharded_results,
+                        ExecuteReplicated(*computations.front(), {sharded_data},
+                                          GetLocalDevices(), execute_options));
     XLA_CHECK(sharded_results.size() > 0)
         << "empty ExecuteReplicated results returned.";
     XLA_CHECK(sharded_results.size() == 1)
@@ -433,8 +432,9 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::ReshardData(
     XLA_CHECK_NE(sharding.type(), xla::OpSharding::UNKNOWN)
         << "Resharding by UNKNOWN sharding type is not allowed.";
 
-    hlo_shardings.push_back(
-        GetValueOrThrow(xla::HloSharding::FromProto(sharding)));
+    XLA_ASSIGN_OR_THROW(xla::HloSharding hlo_sharding,
+                        xla::HloSharding::FromProto(sharding));
+    hlo_shardings.push_back(std::move(hlo_sharding));
 
     xla::OpSharding fallback_sharding;
     fallback_sharding.set_type(xla::OpSharding::REPLICATED);
@@ -457,9 +457,9 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::ReshardData(
     root = xla::Tuple(&builder, param_ops);
   }
 
-  xla::XlaComputation xla_computation = GetValueOrThrow(builder.Build(root));
-  xla::ProgramShape program_shape =
-      GetValueOrThrow(xla_computation.GetProgramShape());
+  XLA_ASSIGN_OR_THROW(xla::XlaComputation xla_computation, builder.Build(root));
+  XLA_ASSIGN_OR_THROW(xla::ProgramShape program_shape,
+                      xla_computation.GetProgramShape());
 
   std::string device = GetDefaultDevice();
   std::vector<torch_xla::runtime::ComputationClient::CompileInstance> instances;
@@ -474,8 +474,9 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::ReshardData(
 
   torch_xla::runtime::ComputationClient::ExecuteReplicatedOptions
       execute_options;
-  auto resharded_results = ExecuteReplicated(
-      *computation, handles, GetLocalDevices(), execute_options);
+  XLA_ASSIGN_OR_THROW(std::vector<ComputationClient::DataPtr> resharded_results,
+                      ExecuteReplicated(*computation, handles,
+                                        GetLocalDevices(), execute_options));
   return resharded_results;
 }
 
@@ -509,8 +510,8 @@ std::shared_ptr<xla::PjRtBuffer> PjRtComputationClient::GetPjRtBuffer(
   }
 }
 
-std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
-    absl::Span<const DataPtr> handles) {
+absl::StatusOr<std::vector<xla::Literal>>
+PjRtComputationClient::TransferFromDevice(absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
@@ -523,21 +524,17 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     // Use XLA replication to reassemble the sharded data. If input handle
     // is not sharded, then it is a no-op.
     std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
-    XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
-    XLA_CHECK(pjrt_data->buffer != nullptr)
+    ABSL_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
+    ABSL_CHECK(pjrt_data->buffer != nullptr)
         << "PjRt buffer is null in " << __FUNCTION__;
 
-    xla::Literal& literal =
-        literals.emplace_back(host_output_shape(pjrt_data->buffer.get()));
+    xla::Literal& literal = literals.emplace_back(
+        xla::Literal(host_output_shape(pjrt_data->buffer.get())));
     futures.push_back(pjrt_data->buffer->ToLiteral(&literal));
 
     total_size += literal.size_bytes();
   }
-  for (auto& future : futures) {
-    absl::Status status = future.Await();
-    XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
-                         << __FUNCTION__;
-  }
+  XLA_RETURN_IF_ERROR(xla::JoinFutures(futures).Await());
   InboundDataMetric()->AddSample(total_size);
 
   return literals;
@@ -558,9 +555,8 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
 
   for (auto& instance : instances) {
     xla::CompileOptions compile_options;
-    for (auto& option : custom_compile_options_) {
-      compile_options.env_option_overrides.push_back(
-          {option.first, option.second});
+    for (const auto& [name, value] : custom_compile_options_) {
+      compile_options.env_option_overrides.push_back({name, value});
     }
     if (enable_cm_in_mp) {
       compile_options.executable_build_options.set_use_spmd_partitioning(true);
@@ -672,7 +668,9 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       TF_VLOG(3) << "memory usage is not availiable";
     }
 
-    const auto& hlo_modules = GetValueOrThrow(executable->GetHloModules());
+    XLA_ASSIGN_OR_THROW(
+        const std::vector<std::shared_ptr<xla::HloModule>>& hlo_modules,
+        executable->GetHloModules());
     xla::HloComputation* hlo_computation = hlo_modules[0]->entry_computation();
     std::shared_ptr<PjRtComputation> pjrt_computation =
         std::make_shared<PjRtComputation>(
@@ -691,8 +689,9 @@ std::string PjRtComputationClient::SerializeComputation(
     const ComputationPtr computation) {
   const PjRtComputation& pjrt_computation =
       dynamic_cast<const PjRtComputation&>(*computation);
-
-  return GetValueOrThrow(pjrt_computation.executable->SerializeExecutable());
+  XLA_ASSIGN_OR_THROW(std::string serialized_executable,
+                      pjrt_computation.executable->SerializeExecutable());
+  return serialized_executable;
 }
 
 ComputationClient::ComputationPtr PjRtComputationClient::DeserializeComputation(
@@ -734,7 +733,7 @@ torch::lazy::hash_t PjRtComputationClient::HashCompilationEnv() {
   return comp_env_hash_;
 }
 
-std::vector<ComputationClient::DataPtr>
+absl::StatusOr<std::vector<ComputationClient::DataPtr>>
 PjRtComputationClient::ExecuteComputation(
     const ComputationClient::Computation& computation,
     absl::Span<const ComputationClient::DataPtr> arguments,
@@ -754,14 +753,14 @@ PjRtComputationClient::ExecuteComputation(
       dynamic_cast<const PjRtComputation&>(computation);
 
   xla::PjRtDevice* pjrt_device = StringToPjRtDevice(device);
-  XLA_CHECK(pjrt_device->IsAddressable()) << pjrt_device->DebugString();
+  ABSL_CHECK(pjrt_device->IsAddressable()) << pjrt_device->DebugString();
 
   std::vector<xla::PjRtBuffer*> buffers;
   buffers.reserve(arguments.size());
   for (auto& argument : arguments) {
     const PjRtData* pjrt_data = dynamic_cast<PjRtData*>(argument.get());
 
-    XLA_CHECK(pjrt_device == pjrt_data->buffer->device())
+    ABSL_CHECK(pjrt_device == pjrt_data->buffer->device())
         << "The device currently being used : " << pjrt_device->DebugString()
         << " is different from the device where the buffer resides: "
         << pjrt_data->buffer->device()->DebugString();
@@ -781,11 +780,10 @@ PjRtComputationClient::ExecuteComputation(
              << " Done";
 
   std::optional<xla::PjRtFuture<>> returned_future;
-  std::vector<std::unique_ptr<xla::PjRtBuffer>> results =
-      pjrt_computation.executable
-          ->ExecuteSharded(buffers, pjrt_device, execute_options,
-                           returned_future)
-          .value();
+  XLA_ASSIGN_OR_RETURN(
+      std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
+      pjrt_computation.executable->ExecuteSharded(
+          buffers, pjrt_device, execute_options, returned_future));
 
   returned_future->OnReady(std::move(
       [timed, op_tracker = std::move(op_tracker)](absl::Status unused) mutable {
@@ -809,7 +807,7 @@ PjRtComputationClient::ExecuteComputation(
   return datas;
 }
 
-std::vector<ComputationClient::DataPtr>
+absl::StatusOr<std::vector<ComputationClient::DataPtr>>
 PjRtComputationClient::ExecuteReplicated(
     const ComputationClient::Computation& computation,
     absl::Span<const ComputationClient::DataPtr> arguments,
@@ -843,15 +841,15 @@ PjRtComputationClient::ExecuteReplicated(
           for (int32_t i = start; i < end; ++i) {
             auto pjrt_data =
                 std::dynamic_pointer_cast<PjRtShardedData>(arguments[i]);
-            XLA_CHECK_EQ(pjrt_data->shards.size(), devices.size())
+            ABSL_CHECK_EQ(pjrt_data->shards.size(), devices.size())
                 << "Expected one shard per device";
 
             for (int32_t d = 0; d < devices.size(); d++) {
               std::shared_ptr<PjRtData> shard = pjrt_data->shards[d];
 
               xla::PjRtDevice* pjrt_device = StringToPjRtDevice(devices[d]);
-              XLA_CHECK_EQ(shard->buffer->device(), pjrt_device);
-              XLA_CHECK(pjrt_device->IsAddressable())
+              ABSL_CHECK_EQ(shard->buffer->device(), pjrt_device);
+              ABSL_CHECK(pjrt_device->IsAddressable())
                   << pjrt_device->DebugString();
 
               argument_handles[d][i] = shard->buffer.get();
@@ -887,10 +885,9 @@ PjRtComputationClient::ExecuteReplicated(
     tsl::profiler::TraceMe activity(
         "PjRtComputationClient::ExecuteReplicated_execute",
         tsl::profiler::TraceMeLevel::kInfo);
-    results = pjrt_computation.executable
-                  ->Execute(std::move(argument_handles), execute_options,
-                            returned_futures)
-                  .value();
+    XLA_ASSIGN_OR_RETURN(results, pjrt_computation.executable->Execute(
+                                      std::move(argument_handles),
+                                      execute_options, returned_futures));
 
     (*returned_futures)[0].OnReady(
         std::move([timed, op_tracker = std::move(op_tracker)](
@@ -913,7 +910,7 @@ PjRtComputationClient::ExecuteReplicated(
     const std::vector<xla::Shape>& output_shapes =
         result_shape.IsTuple() ? result_shape.tuple_shapes()
                                : std::vector<xla::Shape>({result_shape});
-    XLA_CHECK_EQ(output_shapes.size(), num_outputs);
+    ABSL_CHECK_EQ(output_shapes.size(), num_outputs);
 
     const std::vector<xla::OpSharding>& output_shardings =
         pjrt_computation.output_shardings_.has_value() && num_outputs > 0
@@ -922,7 +919,7 @@ PjRtComputationClient::ExecuteReplicated(
             // Without an explicit sharding annotation, the output is implicitly
             // replicated, and we mark explicitly replicated here.
             std::vector<xla::OpSharding>(num_outputs);
-    XLA_CHECK_EQ(output_shardings.size(), num_outputs);
+    ABSL_CHECK_EQ(output_shardings.size(), num_outputs);
 
     absl::BlockingCounter counter(num_outputs);
 
@@ -973,6 +970,10 @@ std::vector<std::string> PjRtComputationClient::GetLocalDevices() const {
 
 std::vector<std::string> PjRtComputationClient::GetAllDevices() const {
   return PjRtDevicesToString(client_->devices());
+}
+
+std::string_view PjRtComputationClient::GetPlatformVersion() const {
+  return client_->platform_version();
 }
 
 int PjRtComputationClient::GetNumProcesses() const {
@@ -1042,45 +1043,6 @@ ComputationClient::MemoryInfo PjRtComputationClient::GetMemoryInfo(
   };
 }
 
-void PjRtComputationClient::RegisterCustomCall(const std::string& fn_name,
-                                               void* function_ptr,
-                                               const std::string& platform) {
-  if (platform != "CUDA") {
-    XLA_ERROR() << "Custom call targets can only be registered for "
-                   "PJRT CUDA runtime.";
-    return;
-  }
-
-  auto* c_api_client = dynamic_cast<xla::PjRtCApiClient*>(client_.get());
-  if (!c_api_client) {
-    XLA_REGISTER_CUSTOM_CALL_TARGET_WITH_SYM(fn_name, function_ptr, platform);
-    return;
-  }
-  const PJRT_Api* pjrt_api = c_api_client->pjrt_c_api();
-
-  // See openxla reference:
-  // https://github.com/openxla/xla/blob/b604c8d87df842002a7a8de79a434026329fbcb2/xla/pjrt/c/pjrt_c_api_gpu_test.cc#L414
-  const PJRT_Extension_Base* next =
-      reinterpret_cast<const PJRT_Extension_Base*>(pjrt_api->extension_start);
-  while (next != nullptr &&
-         next->type !=
-             PJRT_Extension_Type::PJRT_Extension_Type_Gpu_Custom_Call) {
-    next = next->next;
-  }
-  XLA_CHECK(next) << "Custom call extension not found";
-  PJRT_Gpu_Register_Custom_Call_Args args;
-  args.struct_size = PJRT_Gpu_Register_Custom_Call_Args_STRUCT_SIZE;
-  args.function_name = fn_name.c_str();
-  args.function_name_size = fn_name.size();
-  args.api_version = 0;
-  args.handler_execute = function_ptr;
-  PJRT_Error* error =
-      reinterpret_cast<const PJRT_Gpu_Custom_Call*>(next)->custom_call(&args);
-  if (error) {
-    XLA_ERROR() << error->status;
-  }
-}
-
 void PjRtComputationClient::OnReadyCallback(
     ComputationClient::DataPtr data, const std::function<void()>& callback) {
   std::shared_ptr<xla::PjRtBuffer> buffer;
@@ -1100,7 +1062,6 @@ void PjRtComputationClient::OnReadyCallback(
 
 void PjRtComputationClient::SetCustomCompileOptions(
     const std::unordered_map<std::string, std::string>& options) {
-  // Stringfy values
   custom_compile_options_.clear();
   for (const auto& [key, value] : options) {
     custom_compile_options_[key] = value;

@@ -116,7 +116,7 @@ def compile(
     full_graph: Optional[bool] = False,
     name: Optional[str] = None,
     max_different_graphs: Optional[int] = None,
-    custom_compile_options: Optional[dict] = None,
+    custom_compile_options: Optional[dict[str, Any]] = None,
 ):
   """
   Optimizes given model/function using torch_xla's LazyTensor tracing mode.
@@ -137,8 +137,11 @@ def compile(
       max_different_graphs (Optional[int]): number of different traced graphs of the given
         model/function that we are allowed to have. An error will be raised in case this limit
         is exceeded.
-      custom_compile_options (Optional[dict]): A dictionary of custom compile options to be set.
-        The keys are strings and the values can be of type bool, float, int, or str.
+      custom_compile_options (Optional[dict[str, Any]]): XLA compiler flag overrides.
+        Keys are XLA compiler flag names (forwarded to xla::CompileOptions.env_option_overrides),
+        and values may be bool, int, float, or str (internally stringified).
+        - {} (empty dict): clear previously set options.
+        - None (default): do not change previously set options (no-op).
 
   Example::
 
@@ -217,7 +220,8 @@ def compile(
       sync()
       torch_xla._XLAC._set_use_eager_mode(saved_eager_mode_status)
       torch_xla._XLAC._set_current_graph_name(saved_current_graph_name)
-  if custom_compile_options is not None and len(custom_compile_options) > 0:
+
+  if custom_compile_options is not None:
     torch_xla._XLAC._set_custom_compile_options(custom_compile_options)
   return _compile() if f is None else _compile()(f)
 
@@ -269,16 +273,13 @@ def launch(
   else:
     xmp.spawn(fn, args=args, nprocs=nprocs, start_method=start_method)
 
-def set_custom_compile_options(
-    options: Optional[dict] = None,
-):
-  """Sets custom compile options for the XLA compilation.
+
+def set_custom_compile_options(options: dict[str, Any]) -> None:
+  """Set XLA **compiler flag overrides** (env option overrides) for compilation.
 
   Args:
-    options: A dictionary of custom compile options to be set.
-      The keys are strings and the values can be of type bool, float, int, or str.
+    options: Dict mapping XLA flag names to values. Values may be bool/float/int/str;
+      they will be stringified before being passed to XLA.
+      Pass an empty dict `{}` to clear previously set options.
   """
-  if options is None:
-    options = {}
   torch_xla._XLAC._set_custom_compile_options(options)
-  
