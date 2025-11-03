@@ -15,6 +15,7 @@ on:
 jobs:
   build-wheels:
     runs-on: ubuntu-latest
+    timeout-minutes: 540
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
@@ -24,6 +25,41 @@ jobs:
     outputs:
       artifact_name: ${{ steps.set_upload_name.outputs.artifact_name }}
     steps:
+      - name: Maximize space
+        shell: bash
+        run: |
+          # tenstorrent/tt-github-actions/.github/actions/maximize_space@main without sudo         
+          echo "Disk usage before"
+          echo "========================"
+          df -h
+          echo "Space used by toolchain"
+          echo "-------------------------"
+          du -h --max-depth=2 /opt || true
+          echo "Space used by sw packages"
+          echo "-------------------------"
+          du -h --max-depth=2 /__t || true
+          # Remove sw packages
+          if [ -d "/__t" ]; then
+            rm -fr /__t/PyPy || true
+            rm -fr /__t/node || true
+            rm -fr /__t/CodeQL || true
+            rm -fr /__t/Ruby || true
+            rm -fr /__t/go || true
+            rm -fr /__t/Python || true
+          fi
+          if [ -d "/opt/hostedtoolcache" ]; then
+            rm -fr /opt/hostedtoolcache/PyPy || true
+            rm -fr /opt/hostedtoolcache/node || true
+            rm -fr /opt/hostedtoolcache/CodeQL || true
+            rm -fr /opt/hostedtoolcache/Ruby || true
+            rm -fr /opt/hostedtoolcache/go || true
+            rm -fr /opt/google/chrome || true
+            rm -fr /opt/microsoft || true
+            rm -fr /opt/az || true
+          fi
+          echo "Disk usage after"
+          echo "========================"
+          df -h
       - name: "Build Torch/XLA wheel"
         shell: bash
         id: build_wheels
@@ -54,16 +90,16 @@ jobs:
           (
             # Build PyTorch
             # From https://docs.pytorch.org/FBGEMM/fbgemm/development/BuildInstructions.html, section "Build Issues with GCC 12+"
-            export CFLAGS+=" -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
-            export CXXFLAGS+=" -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
+            export CFLAGS+="-w -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
+            export CXXFLAGS+="-w -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
             # copy pre-built wheels from cache
-            python3.11 setup.py bdist_wheel
-            python3.11 setup.py develop
+            MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
+            MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py develop
           )
 
           # Build PyTorch/XLA
           cd xla/
-          python3.11 setup.py bdist_wheel
+          MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
 
           # Collect wheels
           mkdir -p /dist
