@@ -25,6 +25,7 @@ from jax._src import dtypes
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
+import logging
 
 DEFAULT_MASK_VALUE = -0.7 * float(jnp.finfo(jnp.dtype("float32")).max)
 # The page size is too small. We only have 32 SREGs in TC. If the pages
@@ -1421,12 +1422,12 @@ def simplify_key(key):
   return (
       jnp.dtype(q_dtype).name,
       jnp.dtype(kv_dtype).name,
-      next_power_of_2(num_q_heads_per_blk),
-      next_power_of_2(num_kv_heads_per_blk),
+      num_q_heads_per_blk,
+      num_kv_heads_per_blk,
       (head_dim + 127) // 128 * 128,
       next_power_of_2(page_size),
       next_power_of_2(max_num_batched_tokens),
-      next_power_of_2(page_size * pages_per_seq),
+      page_size * pages_per_seq,
   )
 
 
@@ -1472,7 +1473,7 @@ def get_tuned_block_sizes(
       max_num_batched_tokens,
       pages_per_seq,
   )
-  key = simplify_key(key)
+  simplified_key = simplify_key(key)
   device_name = get_device_name()
 
   # Default block sizes.
@@ -1500,8 +1501,12 @@ def get_tuned_block_sizes(
     # OOM in vmem
     bkv, bq = (32, 32)
   elif device_name in TUNED_BLOCK_SIZES:
-    if key in TUNED_BLOCK_SIZES[device_name]:
-      bkv, bq = TUNED_BLOCK_SIZES[device_name][key]
+    if simplified_key in TUNED_BLOCK_SIZES[device_name]:
+      bkv, bq = TUNED_BLOCK_SIZES[device_name][simplified_key]
+    else:
+      logging.warning(
+          f"simplified_key({simplified_key}) is not in ragged attention kernel's tuning table!, the key before simpilification is {key}"
+      )
   return (min(pages_per_seq, bkv), min(max_num_batched_tokens, bq))
 
 
@@ -1949,12 +1954,14 @@ def ragged_paged_attention_kernel(
       # kv lens will be contracting dim, we should mask out the NaNs.
       kv_mask = (
           lax.broadcasted_iota(jnp.int32, k.shape, 0) < kv_len - kv_len_start)
-      k = jnp.where(kv_mask, k.astype(jnp.float32), 0).astype(k.dtype)
-      v = jnp.where(kv_mask, v.astype(jnp.float32), 0).astype(v.dtype)
+      k = jnp.where(kv_mask, k, 0)
+      v = jnp.where(kv_mask, v, 0)
 
-      qk = (
-          jnp.einsum("nd,md->nm", q, k, preferred_element_type=jnp.float32) *
-          sm_scale)
+      qk = jnp.einsum("nd,md->nm", q, k, preferred_element_type=jnp.float32)
+      if k_scale is not None:
+        qk *= sm_scale * k_scale
+      else:
+        qk *= sm_scale
       store_start = jnp.maximum(q_start - q_len_start, 0)
       store_end = jnp.minimum(q_end - q_len_start, num_q_per_blk)
 
@@ -2002,6 +2009,8 @@ def ragged_paged_attention_kernel(
       m_curr = jnp.max(qk, axis=1, keepdims=True)
       s_curr = jnp.exp(qk - m_curr)
       qkv = jnp.dot(s_curr, v, preferred_element_type=jnp.float32)
+      if v_scale is not None:
+        qkv *= v_scale
       lm_store_shape = head_m_ref.shape
       m_curr = jnp.broadcast_to(m_curr, lm_store_shape)
       l_curr = jnp.broadcast_to(
@@ -2083,14 +2092,6 @@ def ragged_paged_attention_kernel(
         for step_idx in range(kv_load_step):
           k = k_list[step_idx]
           v = v_list[step_idx]
-          if k_scale is not None:
-            # NOTE: Conversion between arbitrary data types is not supported.
-            # That's why it is converted to float32 first.
-            k = k.astype(jnp.float32) * k_scale
-            k = k.astype(q_ref.dtype)
-          if v_scale is not None:
-            v = v.astype(jnp.float32) * v_scale
-            v = v.astype(q_ref.dtype)
           kv_head_idx = kv_head_chunk_idx + step_idx
           q_head_idx = kv_head_idx * num_q_heads_per_kv_head
           # TODO(jevinjiang): extra handlig for packed type that can start at
@@ -2338,7 +2339,7 @@ def ragged_paged_attention(
           grid=grid,
           scratch_shapes=scratch_shapes,
       ),
-      compiler_params=pltpu.TPUCompilerParams(
+      compiler_params=pltpu.CompilerParams(
           dimension_semantics=(
               "arbitrary",
               "arbitrary",

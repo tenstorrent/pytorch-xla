@@ -42,11 +42,17 @@ new_local_repository(
     path = PYTORCH_LOCAL_DIR,
 )
 
+new_local_repository(
+    name = "fmt",
+    build_file = "//bazel:fmt.BUILD",
+    path = PYTORCH_LOCAL_DIR + "/third_party/fmt",
+)
+
 ############################# OpenXLA Setup ###############################
 
 # To build PyTorch/XLA with a new revison of OpenXLA, update the xla_hash to
 # the openxla git commit hash and note the date of the commit.
-xla_hash = '3d5ece64321630dade7ff733ae1353fc3c83d9cc'  # Committed on 2025-06-17.
+xla_hash = '9a9aa0e11e4fcda8d6a9c3267dca6776ddbdb0ca'  # Committed on 2025-10-01.
 
 http_archive(
     name = "xla",
@@ -56,9 +62,8 @@ http_archive(
     ],
     patch_tool = "patch",
     patches = [
-        "//openxla_patches:gpu_nvml.diff",
-        "//openxla_patches:gpu_race_condition.diff",
-        "//openxla_patches:count_down.diff",
+        "//openxla_patches:no_fortify.diff",
+        "//openxla_patches:if_constexpr_static_assert.diff",
     ],
     strip_prefix = "xla-" + xla_hash,
     urls = [
@@ -80,6 +85,19 @@ http_archive(
 #    name = "xla",
 #    path = "/path/to/openxla",
 # )
+
+# Initialize OpenXLA's external dependencies. There is an specific order
+# which those dependencies are initialized, because for bazel it's the
+# first definition that takes precedence.
+# We follow what openxla/xla does exactly:
+# https://github.com/openxla/xla/blob/main/WORKSPACE#L37
+load("@xla//:workspace4.bzl", "xla_workspace4")
+
+xla_workspace4()
+
+load("@xla//:workspace3.bzl", "xla_workspace3")
+
+xla_workspace3()
 
 # Initialize hermetic Python
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
@@ -115,14 +133,6 @@ install_deps()
 
 
 
-# Initialize OpenXLA's external dependencies.
-load("@xla//:workspace4.bzl", "xla_workspace4")
-
-xla_workspace4()
-
-load("@xla//:workspace3.bzl", "xla_workspace3")
-
-xla_workspace3()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
@@ -137,16 +147,16 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
 
+# Even though we don't support XLA:CUDA anymore, we still need to keep the
+# following. The reason being that `pjrt_computation_client_test` depends on
+# `@xla//xla/tools`, which calls:
+#
+# ```
+# load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")`
+# ```
 load(
     "@xla//third_party/gpus:cuda_configure.bzl",
     "cuda_configure",
 )
 
 cuda_configure(name = "local_config_cuda")
-
-load(
-    "@xla//third_party/nccl:nccl_configure.bzl",
-    "nccl_configure",
-)
-
-nccl_configure(name = "local_config_nccl")

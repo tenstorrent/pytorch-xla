@@ -7,16 +7,6 @@ import warnings
 
 import torch
 
-if not torch.cuda.is_available():
-  # Load _XLAC_cuda_functions to RTLD_GLOBAL, so that it can be used by _XLAC.
-  flags = sys.getdlopenflags()
-  sys.setdlopenflags(flags | os.RTLD_NOW | os.RTLD_GLOBAL)
-
-  import _XLAC_cuda_functions
-
-  # Then, restore the original flags.
-  sys.setdlopenflags(flags)
-
 import _XLAC
 from ._internal import tpu
 from .version import __version__
@@ -41,8 +31,6 @@ def _set_missing_flags(flags, sets):
 def _setup_xla_flags():
   flags = os.environ.get('XLA_FLAGS', '').split(' ')
   flags = _set_missing_flags(flags, (('xla_cpu_enable_fast_math', 'false'),))
-  flags = _set_missing_flags(flags,
-                             (('xla_gpu_force_compilation_parallelism', '8'),))
   os.environ['XLA_FLAGS'] = ' '.join(flags)
 
 
@@ -269,8 +257,7 @@ from .stablehlo import save_as_stablehlo, save_torch_model_as_stablehlo
 from .experimental import plugins
 from ._internal import neuron, xpu  # Additional built-in plugins
 
-if os.getenv('XLA_REGISTER_INSTALLED_PLUGINS',
-             '0' if _XLAC._has_cuda_support() else '1') == '1':
+if os.getenv('XLA_REGISTER_INSTALLED_PLUGINS', '1') == '1':
   plugins.use_dynamic_plugins()
   plugins.register_installed_plugins()
 

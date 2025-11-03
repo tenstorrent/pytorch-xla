@@ -79,18 +79,6 @@ build:native_arch_posix --host_copt=-march=native
 
 build:mkl_open_source_only --define=tensorflow_mkldnn_contraction_kernel=1
 
-build:cuda --repo_env TF_NEED_CUDA=1
-# "sm" means we emit only cubin, which is forward compatible within a GPU generation.
-# "compute" means we emit both cubin and PTX, which is larger but also forward compatible to future GPU generations.
-build:cuda --crosstool_top=@local_config_cuda//crosstool:toolchain
-build:cuda --@local_config_cuda//:enable_cuda
-build:cuda --define=xla_python_enable_gpu=true
-build:cuda --cxxopt=-DXLA_CUDA=1
-
-# Coverage with cuda/gcc/nvcc requires manually setting coverage flags.
-coverage:cuda --per_file_copt=third_party/.*,torch_xla/.*@--coverage
-coverage:cuda --linkopt=-lgcov
-
 build:acl --define==build_with_acl=true
 
 build:nonccl --define=no_nccl_support=true
@@ -103,9 +91,8 @@ build:short_logs --output_filter=DONT_MATCH_ANYTHING
 #build:tpu --@xla//xla/python:enable_tpu=true
 build:tpu --define=with_tpu_support=true
 
-# Run tests serially with TPU and GPU (only 1 device is available).
+# Run tests serially with TPU (only 1 device is available).
 test:tpu --local_test_jobs=1
-test:cuda --local_test_jobs=1
 
 #########################################################################
 # RBE config options below.
@@ -113,11 +100,11 @@ test:cuda --local_test_jobs=1
 common --experimental_repo_remote_exec
 
 # Inherit environmental variables that are used in testing.
-test --test_env=TPU_NUM_DEVICES --test_env=GPU_NUM_DEVICES --test_env=CPU_NUM_DEVICES --test_env=XRT_LOCAL_WORKER
+test --test_env=TPU_NUM_DEVICES --test_env=CPU_NUM_DEVICES --test_env=XRT_LOCAL_WORKER
 test --test_env=XRT_TPU_CONFIG --test_env=XRT_DEVICE_MAP --test_env=XRT_WORKERS --test_env=XRT_MESH_SERVICE_ADDRESS
 test --test_env=XRT_SHARD_WORLD_SIZE --test_env=XRT_MULTI_PROCESSING_DEVICE --test_env=XRT_HOST_ORDINAL --test_env=XRT_SHARD_ORDINAL
 test --test_env=XRT_START_LOCAL_SERVER --test_env=TPUVM_MODE --test_env=PJRT_DEVICE --test_env=PJRT_TPU_MAX_INFLIGHT_COMPUTATIONS
-test --test_env=PJRT_CPU_ASYNC_CLIENT --test_env=PJRT_GPU_ASYNC_CLIENT --test_env=TPU_LIBRARY_PATH --test_env=PJRT_DIST_SERVICE_ADDR
+test --test_env=PJRT_CPU_ASYNC_CLIENT --test_env=TPU_LIBRARY_PATH --test_env=PJRT_DIST_SERVICE_ADDR
 test --test_env=PJRT_LOCAL_PROCESS_RANK
 
 # This environmental variable is important for properly integrating with XLA.

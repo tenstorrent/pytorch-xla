@@ -19,9 +19,6 @@
 #   BAZEL_VERBOSE=0
 #     turn on verbose messages during the bazel build of the xla/xrt client
 #
-#   XLA_CUDA=0
-#     build the xla/xrt client with CUDA enabled
-#
 #   XLA_CPU_USE_ACL=0
 #     whether to use ACL
 #
@@ -115,18 +112,18 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 
 USE_NIGHTLY = False  # Whether to use nightly or stable libtpu and JAX.
 
-_libtpu_version = '0.0.18'
-_libtpu_date = '20250617'
+_libtpu_version = '0.0.24'
+_libtpu_date = '20250929'
 
 _jax_version = '0.7.1'
 _jaxlib_version = '0.7.1'
 _jax_date = '20250617'  # Date for jax and jaxlib.
 
 if USE_NIGHTLY:
-  _libtpu_version += f".dev{_libtpu_date}"
+  _libtpu_version += f".dev{_libtpu_date}+nightly"
   _jax_version += f'.dev{_jax_date}'
   _jaxlib_version += f'.dev{_jax_date}'
-  _libtpu_wheel_name = f'libtpu-{_libtpu_version}.dev{_libtpu_date}+nightly-py3-none-manylinux_2_31_{platform_machine}'
+  _libtpu_wheel_name = f'libtpu-{_libtpu_version}-py3-none-manylinux_2_31_{platform_machine}'
   _libtpu_storage_directory = 'libtpu-nightly-releases'
 else:
   # The postfix can be changed when the version is updated. Check
@@ -337,19 +334,6 @@ with open(os.path.join(cwd, "README.md"), encoding="utf-8") as f:
 # 1. Find `torch_xla` and its subpackages automatically from the root.
 packages_to_include = find_packages(include=['torch_xla', 'torch_xla.*'])
 
-# 2. Explicitly find the contents of the nested `torchax` package.
-#    Find all sub-packages within the torchax directory (e.g., 'ops').
-torchax_source_dir = 'torchax/torchax'
-torchax_subpackages = find_packages(where=torchax_source_dir)
-#    Construct the full list of packages, starting with the top-level
-#    'torchax' and adding all the discovered sub-packages.
-packages_to_include.extend(['torchax'] +
-                           ['torchax.' + pkg for pkg in torchax_subpackages])
-
-# 3. The package_dir mapping explicitly tells setuptools where the 'torchax'
-#    package's source code begins. `torch_xla` source code is inferred.
-package_dir_mapping = {'torchax': torchax_source_dir}
-
 
 class Develop(develop.develop):
   """
@@ -374,7 +358,7 @@ class Develop(develop.develop):
     and `.pth` files. setuptools uses `.egg-link` by default. However, `.egg-link`
     only supports linking a single directory containg one editable package.
     This function removes the `.egg-link` file and generates a `.pth` file that can
-    be used to link multiple packages, in particular, `torch_xla` and `torchax`.
+    be used to link multiple packages.
 
     Note that this function is only relevant in the editable package development path
     (`python setup.py develop`). Nightly and release wheel builds work out of the box
@@ -411,14 +395,8 @@ class Develop(develop.develop):
     pth_filename = os.path.join(target_dir, f"{dist_name}.pth")
 
     project_root = os.path.dirname(os.path.abspath(__file__))
-    paths_to_add = {
-        project_root,  # For `torch_xla`
-        os.path.abspath(os.path.join(project_root, 'torchax')),  # For `torchax`
-    }
-
     with open(pth_filename, "w", encoding='utf-8') as f:
-      for path in sorted(paths_to_add):
-        f.write(path + "\n")
+      f.write(project_root + "\n")
 
 
 def _get_jax_install_requirements():
@@ -454,10 +432,8 @@ setup(
     ],
     python_requires=">=3.10.0",
     packages=packages_to_include,
-    package_dir=package_dir_mapping,
     ext_modules=[
         BazelExtension('//:_XLAC.so'),
-        BazelExtension('//:_XLAC_cuda_functions.so'),
     ],
     install_requires=[
         'absl-py>=1.0.0',
@@ -467,11 +443,12 @@ setup(
         # importlib.metadata backport required for PJRT plugin discovery prior
         # to Python 3.10
         'importlib_metadata>=4.6;python_version<"3.10"',
-        # Some torch operations are lowered to HLO via JAX.
-        *_get_jax_install_requirements(),
     ],
     package_data={
-        'torch_xla': ['lib/*.so*',],
+        'torch_xla': [
+            'lib/*.so*',
+            'py.typed',
+        ],
     },
     entry_points={
         'console_scripts': [
@@ -485,15 +462,13 @@ setup(
     },
     extras_require={
         # On Cloud TPU VM install with:
-        # pip install torch_xla[tpu] -f https://storage.googleapis.com/libtpu-wheels/index.html -f https://storage.googleapis.com/libtpu-releases/index.html
+        # pip install torch_xla[tpu] --index-url https://us-python.pkg.dev/ml-oss-artifacts-published/jax/simple/ --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
         'tpu': [
             f'libtpu=={_libtpu_version}',
             'tpu-info',
         ],
-        # As of https://github.com/pytorch/xla/pull/8895, jax is always a dependency of torch_xla.
-        # However, this no-op extras_require entrypoint is left here for backwards compatibility.
-        # pip install torch_xla[pallas] -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
-        'pallas': [f'jaxlib=={_jaxlib_version}', f'jax=={_jax_version}'],
+        # pip install torch_xla[pallas] --index-url https://us-python.pkg.dev/ml-oss-artifacts-published/jax/simple/ --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
+        'pallas': [*_get_jax_install_requirements(),]
     },
     cmdclass={
         'build_ext': BuildBazelExtension,

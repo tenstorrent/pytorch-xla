@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "torch_xla/csrc/device.h"
@@ -115,9 +116,9 @@ class ComputationClient {
         : name_(name),
           computation_(std::move(computation)),
           devices_(std::move(devices)) {
-      program_shape_ = GetValueOrThrow(computation_.GetProgramShape());
+      XLA_ASSIGN_OR_THROW(program_shape_, computation_.GetProgramShape());
       const xla::HloModuleProto& proto = computation_.proto();
-      hash_ = GetValueOrThrow(ComputeHash(proto, name));
+      XLA_ASSIGN_OR_THROW(hash_, ComputeHash(proto, name));
     }
 
     Computation(std::string name, xla::XlaComputation computation,
@@ -190,7 +191,8 @@ class ComputationClient {
 
     const std::string to_string() const override {
       xla::HloModuleConfig hlo_config(program_shape());
-      std::unique_ptr<xla::HloModule> module = GetValueOrThrow(
+      XLA_ASSIGN_OR_THROW(
+          std::unique_ptr<xla::HloModule> module,
           xla::HloModule::CreateFromProto(computation().proto(), hlo_config));
       return module->ToString();
     }
@@ -318,7 +320,7 @@ class ComputationClient {
   // Note: `TransferFromDevice` call will block until the `DataPtrs` are ready
   // if they were created by `TransferToDevice` or `Execute*`. Calling this from
   // python while holding the GIL can cause deadlocks!
-  virtual std::vector<xla::Literal> TransferFromDevice(
+  virtual absl::StatusOr<std::vector<xla::Literal>> TransferFromDevice(
       absl::Span<const DataPtr> handles) = 0;
 
   virtual std::uintptr_t UnsafeBufferPointer(const DataPtr handle) = 0;
@@ -346,7 +348,7 @@ class ComputationClient {
   // The passed device must match the common device of the arguments Data.
   // If options.explode_tuple is true, the output tuple will be decomposed into
   // its single elements.
-  virtual std::vector<DataPtr> ExecuteComputation(
+  virtual absl::StatusOr<std::vector<DataPtr>> ExecuteComputation(
       const Computation& computation, absl::Span<const DataPtr> arguments,
       const std::string& device,
       const ExecuteComputationOptions& options =
@@ -357,7 +359,7 @@ class ComputationClient {
   // as `devices`. If options.explode_tuple is true, the output tuples will be
   // decomposed into their single elements. Returns a vector of outputs, each
   // of which is sharded in the same order as `devices`.
-  virtual std::vector<DataPtr> ExecuteReplicated(
+  virtual absl::StatusOr<std::vector<DataPtr>> ExecuteReplicated(
       const Computation& computation, absl::Span<const DataPtr> arguments,
       absl::Span<const std::string> devices,
       const ExecuteReplicatedOptions& options) = 0;
@@ -373,11 +375,11 @@ class ComputationClient {
   virtual absl::StatusOr<xla::PjRtDevice*> LookupAddressableDevice(
       int local_device_id) const = 0;
 
-  virtual std::intptr_t GetCudaStreamForDevice(int local_device_id) const = 0;
-
   virtual size_t GetNumLocalDevices() const = 0;
 
   virtual size_t GetNumDevices() const = 0;
+
+  virtual std::string_view GetPlatformVersion() const = 0;
 
   virtual std::vector<std::string> GetLocalDevices() const = 0;
 
@@ -444,6 +446,11 @@ class ComputationClient {
   // after the last ':' character of the device string.
   static int64_t GetDeviceOrdinal(const std::string& device);
 
+  // Sets XLA compile option overrides used by the backend compiler.
+  // - The map keys are XLA compiler flag names (env option override keys).
+  // - The values are stringified flag values.
+  // - Calling this method **overwrites** any previously set options.
+  //   (Pass an empty map to clear.)
   virtual void SetCustomCompileOptions(
       const std::unordered_map<std::string, std::string>& options) = 0;
 

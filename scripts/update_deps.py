@@ -43,6 +43,9 @@ _JAX_INDEX_URL = 'https://us-python.pkg.dev/ml-oss-artifacts-published/jax-publi
 _JAX_PROJECT_URL = _JAX_INDEX_URL + 'jax/'
 _JAXLIB_PROJECT_URL = _JAX_INDEX_URL + 'jaxlib/'
 
+_TORCH_COMMIT_FORMAT = "# %cs%n%H"
+_TORCH_COMMIT_FILE = os.path.join(_PTXLA_DIR, ".torch_commit")
+
 
 class PEP503Parser(HTMLParser):
   """Parser for PEP 503 simple repository API pages.
@@ -162,8 +165,8 @@ def get_latest_stable_jax_info() -> tuple[str, str, str] | None:
   published_at = data['published_at']  # e.g., "2024-04-26T22:58:34Z"
   release_date = published_at.split('T')[0]  # e.g., "2024-04-26"
 
-  # The XLA commit is in third_party/xla/workspace.bzl in the JAX repo.
-  workspace_bzl_url = f'https://raw.githubusercontent.com/google/jax/{tag_name}/third_party/xla/workspace.bzl'
+  # The XLA commit is in third_party/xla/revision.bzl in the JAX repo.
+  workspace_bzl_url = f'https://raw.githubusercontent.com/google/jax/{tag_name}/third_party/xla/revision.bzl'
   try:
     with urllib.request.urlopen(workspace_bzl_url) as response:
       workspace_content = response.read().decode()
@@ -478,6 +481,38 @@ def update_jax(use_latest: bool) -> bool:
   return success
 
 
+def update_pytorch(use_latest: bool) -> bool:
+  clean_tmp_dir()
+
+  torch_temp_dir = os.path.join(_TMP_DIR, "pytorch")
+  branch = "main" if use_latest else "viable/strict"
+
+  cmd_clone = [
+      "git",
+      "clone",
+      "--branch",
+      branch,
+      "--depth=1",
+      "https://github.com/pytorch/pytorch",
+      torch_temp_dir,
+  ]
+  os.system(" ".join(cmd_clone))
+
+  cmd_commit_show = [
+      "git",
+      f"--git-dir={torch_temp_dir}/.git",
+      "show",
+      "--no-patch",
+      f"--pretty=format:\"{_TORCH_COMMIT_FORMAT}\"",
+  ]
+  commit = os.popen(" ".join(cmd_commit_show)).read().strip()
+
+  with open(_TORCH_COMMIT_FILE, "w") as f:
+    f.write(commit)
+
+  return True
+
+
 def main() -> None:
   logging.basicConfig(level=logging.INFO)
 
@@ -496,7 +531,9 @@ def main() -> None:
     openxla_updated = update_openxla()
     libtpu_updated = update_libtpu()
     jax_updated = update_jax(use_latest=True)
-    if not (openxla_updated and libtpu_updated and jax_updated):
+    pytorch_updated = update_pytorch(use_latest=True)
+    if not (openxla_updated and libtpu_updated and jax_updated and
+            pytorch_updated):
       sys.exit(1)
   else:
     logger.info('Updating to latest stable versions...')
@@ -513,7 +550,11 @@ def main() -> None:
     libtpu_updated = update_libtpu(
         target_date=jax_release_date.replace('-', ''))
     jax_updated = update_jax(use_latest=False)
-    if not (openxla_updated and libtpu_updated and jax_updated):
+
+    pytorch_updated = update_pytorch(use_latest=False)
+
+    if not (openxla_updated and libtpu_updated and jax_updated and
+            pytorch_updated):
       sys.exit(1)
 
 
