@@ -215,6 +215,22 @@ inline std::vector<at::Tensor> xla_expand_outplace(at::TensorList to_expand) {
 std::shared_ptr<runtime::ComputationClient::Data> get_data_handle(
     const at::Tensor& input);
 
+inline bool is_noop_sharding(const xla::OpSharding& op_sharding) {
+  // Unknown
+  if (op_sharding.type() == xla::OpSharding::UNKNOWN) return true;
+
+  // Replicated
+  if (op_sharding.type() == xla::OpSharding::REPLICATED) return true;
+
+  // OTHER with single device
+  if (op_sharding.type() == xla::OpSharding::OTHER &&
+      op_sharding.tile_assignment_devices_size() <= 1) {
+    return true;
+  }
+
+  return false;
+}
+
 }  // namespace torch_xla
 
 #endif  // XLA_TORCH_XLA_CSRC_TENSOR_UTIL_H_

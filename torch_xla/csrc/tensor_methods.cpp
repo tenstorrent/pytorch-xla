@@ -610,6 +610,12 @@ void custom_sharding_(
     const XLATensorPtr& input,
     const std::shared_ptr<XLATensor::ShardingSpec>& sharding_spec,
     const CustomSharding::Type& type) {
+  if (runtime::sys_util::GetEnvBool("CONVERT_SHLO_TO_SHARDY", false)) {
+    if (is_noop_sharding(sharding_spec->sharding)) {
+      return;
+    }
+  }
+
   torch::lazy::NodePtr customShardingNode = torch_xla::MakeNode<CustomSharding>(
       input->GetIrValue(), input->shape().get(), type);
   XlaNode* xla_node = dynamic_cast<XlaNode*>(customShardingNode.get());
