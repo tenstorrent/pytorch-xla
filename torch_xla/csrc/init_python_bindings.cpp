@@ -1561,6 +1561,14 @@ void InitXlaModuleBindings(py::module m) {
            []() {
             return XLAGraphExecutor::Get()->IsComputationCacheInitialized();
            })
+      .def("_xla_computation_cache_clear",
+            []() {
+              WaitDeviceOps();// wait for any inflight computations which may hold references to cached computations
+              XLAGraphExecutor::ComputationCache* cache = XLAGraphExecutor::Get()->GetComputationCache();
+              if (cache != nullptr) {
+                cache->Clear();
+              }
+            })
       .def("_get_git_revs",  //
            &GetRevisions)
       .def("_get_xla_tensor_dimension_size",
