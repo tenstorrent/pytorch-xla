@@ -7,11 +7,27 @@ on:
         required: false
         type: string
         default: '2.7.0'
+      xla_branch:
+        description: 'PyTorch-XLA branch to build (default: master)'
+        required: false
+        type: string
+        default: 'master'
     outputs:
       artifact_name:
         description: 'Name of uploaded wheels artifact'
         value: ${{ jobs.build-wheels.outputs.artifact_name }}
   workflow_dispatch:
+    inputs:
+      torch_version:
+        description: 'Torch version to build (default: 2.7.0)'
+        required: false
+        type: string
+        default: '2.7.0'
+      xla_branch:
+        description: 'PyTorch-XLA branch to build (default: master)'
+        required: false
+        type: string
+        default: 'master'
 jobs:
   build-wheels:
     runs-on: ubuntu-latest
@@ -84,7 +100,7 @@ jobs:
           cd /tmp
           git clone --recursive --branch v${{ inputs.torch_version || '2.7.0' }} https://github.com/pytorch/pytorch.git
           cd pytorch/
-          git clone --recursive https://github.com/tenstorrent/pytorch-xla.git xla
+          git clone --recursive --branch ${{ inputs.xla_branch || 'master' }} https://github.com/tenstorrent/pytorch-xla.git xla
 
 
           (
