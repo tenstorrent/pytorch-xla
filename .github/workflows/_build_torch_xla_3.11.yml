@@ -113,7 +113,9 @@ jobs:
             MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py develop
           )
 
-          # Build PyTorch/XLA
+          # Build PyTorch/XLA + debug wheel
+          export DEBUG=1
+
           cd xla/
           MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
 
