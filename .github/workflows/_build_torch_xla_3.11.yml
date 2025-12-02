@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 540
     env:
-      ARTIFACT_NAME: install-artifact-torch-xla-release
+      ARTIFACT_NAME: install-artifact-torch-xla-release-torch-${{ inputs.torch_version }}
       GIT_VERSIONED_XLA_BUILD: 1
     container:
       image: us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/development:tpu
@@ -119,7 +119,11 @@ jobs:
 
           # Collect wheels
           mkdir -p /dist
-          cp dist/*.whl /dist/
+
+          wheel=$(ls dist/torch_xla-*.whl)
+          new_name=$(basename "$wheel" | sed "s/\(torch_xla-[0-9.]*+git[^-]*\)-cp311/\1-torch${{ inputs.torch_version }}-cp311/")
+          cp "$wheel" "/dist/$new_name"
+          echo "Renamed: $(basename "$wheel") -> $new_name"
 
           # Clean up any existing pyenv installation
           rm -rf $HOME/.pyenv

@@ -19,13 +19,15 @@ jobs:
       head_sha: ${{ github.sha }}
 
   build-torch-xla:
-    name: "Build PyTorch/XLA for Python 3.11"
+    name: "Build PyTorch/XLA for Python 3.11 using torch 2.7.0"
     if: needs.check_code_changes.outputs.has_code_changes == 'true'
     uses: ./.github/workflows/_build_torch_xla_3.11.yml
     needs: check_code_changes
+    with:
+      torch_version: '2.7.0'
 
   publish-torch-xla:
-    name: "Publish PyTorch/XLA"
+    name: "Publish PyTorch/XLA for torch 2.7.0"
     uses: ./.github/workflows/_publish_torch_xla.yml
     needs: build-torch-xla
     secrets: inherit
@@ -33,3 +35,21 @@ jobs:
       id-token: write
     with:
       artifact_name: ${{ needs.build-torch-xla.outputs.artifact_name }}
+
+  build-torch-xla-uplift:
+    name: "Build PyTorch/XLA for Python 3.11 using torch 2.9.0"
+    if: needs.check_code_changes.outputs.has_code_changes == 'true'
+    uses: ./.github/workflows/_build_torch_xla_3.11.yml
+    needs: check_code_changes
+    with:
+      torch_version: '2.9.0'
+
+  publish-torch-xla-uplift:
+    name: "Publish PyTorch/XLA for torch 2.9.0"
+    uses: ./.github/workflows/_publish_torch_xla.yml
+    needs: build-torch-xla-uplift
+    secrets: inherit
+    permissions:
+      id-token: write
+    with:
+      artifact_name: ${{ needs.build-torch-xla-uplift.outputs.artifact_name }}
