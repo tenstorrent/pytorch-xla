@@ -3,10 +3,10 @@ on:
   workflow_call:
     inputs:
       torch_version:
-        description: 'Torch version to build (default: 2.7.0)'
+        description: 'Torch version to build (default: 2.9.0)'
         required: false
         type: string
-        default: '2.7.0'
+        default: '2.9.0'
       xla_branch:
         description: 'PyTorch-XLA branch to build (default: master)'
         required: false
@@ -19,10 +19,10 @@ on:
   workflow_dispatch:
     inputs:
       torch_version:
-        description: 'Torch version to build (default: 2.7.0)'
+        description: 'Torch version to build (default: 2.9.0)'
         required: false
         type: string
-        default: '2.7.0'
+        default: '2.9.0'
       xla_branch:
         description: 'PyTorch-XLA branch to build (default: master)'
         required: false
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 540
     env:
-      ARTIFACT_NAME: install-artifact-torch-xla-release-torch-${{ inputs.torch_version }}
+      ARTIFACT_NAME: install-artifact-torch-xla-release
       GIT_VERSIONED_XLA_BUILD: 1
     container:
       image: us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/development:tpu
@@ -54,6 +54,7 @@ jobs:
           echo "Space used by sw packages"
           echo "-------------------------"
           du -h --max-depth=2 /__t || true
+          echo 
           # Remove sw packages
           if [ -d "/__t" ]; then
             rm -fr /__t/PyPy || true
@@ -72,6 +73,7 @@ jobs:
             rm -fr /opt/google/chrome || true
             rm -fr /opt/microsoft || true
             rm -fr /opt/az || true
+            rm -fr /opt/ghc || true
           fi
           echo "Disk usage after"
           echo "========================"
@@ -98,7 +100,7 @@ jobs:
           python3.11 -m pip install pyyaml setuptools wheel numpy typing_extensions requests
 
           cd /tmp
-          git clone --recursive --branch v${{ inputs.torch_version || '2.7.0' }} https://github.com/pytorch/pytorch.git
+          git clone --depth 1 --recursive --branch v${{ inputs.torch_version }} https://github.com/pytorch/pytorch.git
           cd pytorch/
           git clone --recursive --branch ${{ inputs.xla_branch || 'master' }} https://github.com/tenstorrent/pytorch-xla.git xla
 
@@ -111,6 +113,8 @@ jobs:
             # copy pre-built wheels from cache
             MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
             MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py develop
+
+            rm -rf .git/
           )
 
           # Build PyTorch/XLA
@@ -119,11 +123,7 @@ jobs:
 
           # Collect wheels
           mkdir -p /dist
-
-          wheel=$(ls dist/torch_xla-*.whl)
-          new_name=$(basename "$wheel" | sed "s/\(torch_xla-[0-9.]*+git[^-]*\)-cp311/\1-torch${{ inputs.torch_version }}-cp311/")
-          cp "$wheel" "/dist/$new_name"
-          echo "Renamed: $(basename "$wheel") -> $new_name"
+          cp dist/*.whl /dist/
 
           # Clean up any existing pyenv installation
           rm -rf $HOME/.pyenv
