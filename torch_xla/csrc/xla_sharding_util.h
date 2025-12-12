@@ -129,6 +129,16 @@ class ShardingUtil {
   static void XlaMarkSharding(const at::Tensor& input,
                               xla::OpSharding sharding);
 
+  // XlaMarkSharding with priority for Shardy propagation.
+  // Priority values: lower = higher priority, -1 = no priority set.
+  static void XlaMarkSharding(const at::Tensor& input, xla::OpSharding sharding,
+                              const std::vector<int64_t>& priority);
+
+  // Convert priority vector to comma-separated string for frontend_attributes.
+  // Example: [0, -1, 1] -> "0,-1,1"
+  static std::string PriorityVectorToString(
+      const std::vector<int64_t>& priority);
+
   // Add a custom sharding node IR to an XLATensor. Note that unlike
   // XlaMarkSharding, this will not explicitly set a sharding spec tied to the
   // DeviceData node, nor transfer any sharded data to the device. This serves

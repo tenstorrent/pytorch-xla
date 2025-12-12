@@ -19,6 +19,7 @@
 #include "torch_xla/csrc/shape_helper.h"
 #include "torch_xla/csrc/stack_frame_index_builder.h"
 #include "torch_xla/csrc/status.h"
+#include "torch_xla/csrc/xla_sharding_util.h"
 
 namespace torch_xla {
 
@@ -121,7 +122,8 @@ LoweringContext::LoweringContext(
 
 xla::XlaOp LoweringContext::GetParameter(
     const std::shared_ptr<torch::lazy::BackendData>& backend_data,
-    const std::unordered_set<uint32_t>& unbounded_dynamic_dims) {
+    const std::unordered_set<uint32_t>& unbounded_dynamic_dims,
+    const std::vector<int64_t>& priority) {
   const torch::lazy::BackendData::Handle handle = backend_data->GetHandle();
   auto it = parameters_map_.find(handle);
   if (it == parameters_map_.end()) {
@@ -136,11 +138,27 @@ xla::XlaOp LoweringContext::GetParameter(
     const size_t param_index = parameters_.size();
     const std::string param_name = absl::StrCat("p", param_index);
     xla::XlaOp param;
+
+    // Build priority string for frontend_attributes if priority is provided
+    xla::FrontendAttributes feattr;
+    if (!priority.empty()) {
+      (*feattr.mutable_map())["xla.sdy.priority"] =
+          ShardingUtil::PriorityVectorToString(priority);
+    }
+
     if (data->HasSharding()) {
       const xla::OpSharding sharding = data->GetSharding();
       const xla::XlaScopedShardingAssignment scoped_sharding(builder(),
                                                              sharding);
-      param = xla::Parameter(builder(), param_index, shape, param_name);
+      // priority is only set via mark_sharding, so if HasSharding() is false,
+      // priority will always be empty
+      if (!priority.empty()) {
+        xla::XlaScopedFrontendAttributesAssignment feattr_assign(builder(),
+                                                                 feattr);
+        param = xla::Parameter(builder(), param_index, shape, param_name);
+      } else {
+        param = xla::Parameter(builder(), param_index, shape, param_name);
+      }
     } else {
       param = xla::Parameter(builder(), param_index, shape, param_name);
     }

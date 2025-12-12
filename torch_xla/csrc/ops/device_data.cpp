@@ -36,6 +36,11 @@ torch::lazy::NodePtr DeviceData::Clone(torch::lazy::OpList operands) const {
 }
 
 XlaOpVector DeviceData::Lower(LoweringContext* loctx) const {
+  const std::vector<int64_t>* priority = GetPriority(0);
+  if (priority != nullptr) {
+    return ReturnOp(
+        loctx->GetParameter(data_, unbounded_dynamic_dims_, *priority), loctx);
+  }
   return ReturnOp(loctx->GetParameter(data_, unbounded_dynamic_dims_), loctx);
 }
 

@@ -177,6 +177,18 @@ void XlaNode::SetSharding(const xla::OpSharding& sharding, size_t index) {
   UpdateShardingHash();
 }
 
+void XlaNode::SetSharding(const xla::OpSharding& sharding, size_t index,
+                          const std::vector<int64_t>& priority) {
+  // Set the sharding
+  SetSharding(sharding, index);
+  // Set the priority
+  if (output_priorities_.size() == 0) {
+    output_priorities_ = std::vector<std::vector<int64_t>>(
+        num_outputs(), std::vector<int64_t>());
+  }
+  output_priorities_[index] = priority;
+}
+
 xla::Shape XlaNode::GetOpShape(
     const std::function<xla::Shape()>& shape_fn) const {
   ShapeCache* shape_cache = GetShapeCache();

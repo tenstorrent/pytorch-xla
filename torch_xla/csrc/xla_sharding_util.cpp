@@ -168,6 +168,16 @@ std::vector<int64_t> ParseStringToIntVector(const std::string& str) {
 
 }  // namespace
 
+std::string ShardingUtil::PriorityVectorToString(
+    const std::vector<int64_t>& priority) {
+  std::string result;
+  for (size_t i = 0; i < priority.size(); ++i) {
+    if (i > 0) result += ",";
+    result += std::to_string(priority[i]);
+  }
+  return result;
+}
+
 bool ShardingUtil::SetHloSharding(LoweringContext* lowering_ctx) {
   bool is_sharded = false;
   for (std::pair<torch::lazy::Output, xla::XlaOp> elem :
@@ -181,6 +191,15 @@ bool ShardingUtil::SetHloSharding(LoweringContext* lowering_ctx) {
     if (sharding != nullptr && sharding->type() != xla::OpSharding::UNKNOWN) {
       *instruction->mutable_sharding() = *sharding;
       is_sharded = true;
+
+      // Set priority in frontend_attributes if available
+      const std::vector<int64_t>* priority =
+          xla_node->GetPriority(elem.first.index);
+      if (priority != nullptr && !priority->empty()) {
+        (*instruction->mutable_frontend_attributes()
+              ->mutable_map())["xla.sdy.priority"] =
+            PriorityVectorToString(*priority);
+      }
     }
   }
   return is_sharded;
@@ -838,6 +857,77 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
     // If the at::Tensor data is not present, we need to re-download the
     // tensor from the physical device to CPU. In that case, the value
     // must be present on the backend device.
+    XLA_CHECK((xtensor->CurrentDataHandle() &&
+               xtensor->CurrentDataHandle()->HasValue()) ||
+              device_data_node != nullptr)
+        << "Cannot shard tensor. Data does not present on any device.";
+    std::vector<XLATensorPtr> xla_tensors{xtensor};
+    auto tensors = XLAGraphExecutor::Get()->GetTensors(&xla_tensors);
+    XLA_CHECK_EQ(tensors.size(), 1);
+    cpu_tensor = tensors[0];
+  }
+  auto xla_data = CreateTensorsData(
+      std::vector<at::Tensor>{cpu_tensor},
+      std::vector<XLATensor::ShardingSpecPtr>{new_sharding_spec},
+      std::vector<std::string>{GetVirtualDevice().toString()})[0];
+  xtensor->SetXlaData(xla_data);
+  xtensor->SetShardingSpec(*new_sharding_spec);
+
+  // Register sharded tensor data.
+  XLAGraphExecutor::Get()->RegisterTensor(xtensor->data());
+}
+
+void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
+                                   xla::OpSharding sharding,
+                                   const std::vector<int64_t>& priority) {
+  TORCH_LAZY_COUNTER("XlaMarkShardingWithPriority", 1);
+  XLA_CHECK(UseVirtualDevice())
+      << "Please enable SPMD via `torch_xla.runtime.use_spmd()`";
+  XLA_CHECK(sharding.type() != xla::OpSharding::UNKNOWN)
+      << "Can't explicilty annotate with UNKNOWN sharding type.";
+  XLATensorPtr xtensor = bridge::GetXlaTensor(input);
+
+  // For Non DeviceData IR values, we directly attach the sharding spec to the
+  // xtensor.
+  const DeviceData* device_data_node = nullptr;
+  if (xtensor->CurrentIrValue()) {
+    device_data_node = DeviceData::Cast(xtensor->CurrentIrValue().node.get());
+    if (!device_data_node) {
+      XlaAnnotateCustomSharding(xtensor, sharding);
+      return;
+    }
+  }
+
+  // Create ShardingSpec with priority
+  XLATensor::ShardingSpecPtr new_sharding_spec =
+      std::make_shared<XLATensor::ShardingSpec>(
+          sharding,
+          MakeShapeWithDeviceLayout(
+              xtensor->shape(),
+              static_cast<XlaDeviceType>(xtensor->GetDevice().type())),
+          priority);
+
+  // For data, we need to deal with the data transfers between
+  // host and device.
+  at::Tensor cpu_tensor;
+  if (xtensor->CurrentTensorData().has_value()) {
+    TORCH_LAZY_COUNTER("VirtualDeviceUsage", 1);
+    cpu_tensor = xtensor->CurrentTensorData().value();
+  } else {
+    XLATensor::ShardingSpecPtr current_sharding_spec = xtensor->sharding_spec();
+    if (current_sharding_spec) {
+      if (ShardingUtil::EqualShardingSpecs(*new_sharding_spec,
+                                           *current_sharding_spec)) {
+        return;
+      }
+      auto type = current_sharding_spec->sharding.type();
+      if (type != xla::OpSharding::REPLICATED &&
+          type != xla::OpSharding::UNKNOWN) {
+        XLA_CHECK(false) << "Existing annotation must be cleared first: "
+                         << current_sharding_spec->sharding.DebugString();
+      }
+    }
+
     XLA_CHECK((xtensor->CurrentDataHandle() &&
                xtensor->CurrentDataHandle()->HasValue()) ||
               device_data_node != nullptr)
