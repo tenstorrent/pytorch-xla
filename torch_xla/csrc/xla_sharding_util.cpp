@@ -5,6 +5,8 @@
 #include <cmath>
 #include <unordered_map>
 
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "torch/csrc/lazy/core/ir_util.h"
 #include "torch_xla/csrc/aten_autograd_ops.h"
@@ -23,6 +25,7 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/execution_options_util.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/hlo/parser/hlo_parser.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/protobuf_util.h"
@@ -168,6 +171,127 @@ std::vector<int64_t> ParseStringToIntVector(const std::string& str) {
 
 }  // namespace
 
+// Build SDY sharding string from OpSharding and priority.
+// Format: #sdy.sharding<@mesh, [{"axis_0"}p0, {"axis_1"}p1, ...]>
+// This is used to pass sharding with priority information through
+// xla.sdy.sharding frontend attribute.
+// Note: This is a standalone function (not in ShardingUtil class) to avoid
+// pybind dependency in files that need to call it.
+std::string BuildSdyShardingString(const xla::OpSharding& sharding,
+                                   const std::vector<int64_t>& priority,
+                                   int64_t rank) {
+  // Handle replicated sharding
+  if (sharding.type() == xla::OpSharding::REPLICATED) {
+    std::string result = "#sdy.sharding<@mesh, [";
+    for (int64_t i = 0; i < rank; ++i) {
+      if (i > 0) result += ", ";
+      // If dimension has priority, make it open ({?}) since
+      // empty+closed+priority is invalid in Shardy
+      bool has_priority =
+          i < static_cast<int64_t>(priority.size()) && priority[i] >= 0;
+      result += has_priority ? "{?}" : "{}";
+      if (has_priority) {
+        result += absl::StrCat("p", priority[i]);
+      }
+    }
+    result += "]>";
+    return result;
+  }
+
+  // Handle tiled sharding (OTHER type)
+  if (sharding.type() != xla::OpSharding::OTHER) {
+    // For MAXIMAL, MANUAL, UNKNOWN, etc., return empty string
+    // to fall back to mhlo.sharding
+    return "";
+  }
+
+  // Convert OpSharding to HloSharding to analyze tile assignment
+  auto hlo_sharding_or = xla::HloSharding::FromProto(sharding);
+  if (!hlo_sharding_or.ok()) {
+    return "";
+  }
+  const xla::HloSharding& hlo_sharding = hlo_sharding_or.value();
+
+  // Get tile assignment dimensions
+  const auto& tile_assignment = hlo_sharding.tile_assignment();
+  const auto& iota = tile_assignment.iota();
+  if (!iota.has_value()) {
+    // Non-iota tile assignments are not supported for SDY conversion
+    return "";
+  }
+
+  // Build dimension shardings
+  // For each tensor dimension, determine which mesh axes shard it
+  std::string result = "#sdy.sharding<@mesh, [";
+
+  // Analyze tile assignment to determine axis mapping
+  // tile_dims correspond to tensor dimensions, with possible replicate dim
+  int64_t num_tile_dims = tile_assignment.num_dimensions();
+  int64_t num_tensor_dims = rank;
+
+  // Check if last dim is for replication
+  bool has_replicate_dim = hlo_sharding.ReplicateOnLastTileDim();
+  if (has_replicate_dim) {
+    num_tile_dims--;
+  }
+
+  // Build mesh axis names based on reshape_dims order
+  // XLA uses _axis_N naming convention
+  std::vector<std::string> mesh_axis_names;
+  for (size_t i = 0; i < iota->reshape_dims().size(); ++i) {
+    mesh_axis_names.push_back(absl::StrCat("\"_axis_", i, "\""));
+  }
+
+  // Track which mesh axis is used for each tensor dimension
+  // Based on tile_assignment dims and transpose_perm
+  for (int64_t dim = 0; dim < num_tensor_dims; ++dim) {
+    if (dim > 0) result += ", ";
+
+    bool has_priority =
+        dim < static_cast<int64_t>(priority.size()) && priority[dim] >= 0;
+    bool has_axis = false;
+    std::string axis_name;
+
+    if (dim < num_tile_dims) {
+      int64_t tile_size = tile_assignment.dim(dim);
+      if (tile_size > 1) {
+        // This dimension is sharded
+        // Find corresponding mesh axis from transpose_perm
+        // The mapping depends on the iota structure
+        for (size_t perm_idx = 0; perm_idx < iota->transpose_perm().size();
+             ++perm_idx) {
+          // Find which reshape_dim contributes to this tile_dim
+          // This is a simplified mapping - full analysis would need
+          // to match XLA's stablehlo_import.cc logic
+          if (iota->reshape_dims()[iota->transpose_perm()[perm_idx]] ==
+              tile_size) {
+            axis_name = mesh_axis_names[iota->transpose_perm()[perm_idx]];
+            has_axis = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // If dimension is empty but has priority, make it open ({?}) since
+    // empty+closed+priority is invalid in Shardy
+    if (has_axis) {
+      result += "{" + axis_name + "}";
+    } else if (has_priority) {
+      result += "{?}";  // open dimension
+    } else {
+      result += "{}";  // closed dimension
+    }
+
+    if (has_priority) {
+      result += absl::StrCat("p", priority[dim]);
+    }
+  }
+
+  result += "]>";
+  return result;
+}
+
 bool ShardingUtil::SetHloSharding(LoweringContext* lowering_ctx) {
   bool is_sharded = false;
   for (std::pair<torch::lazy::Output, xla::XlaOp> elem :
@@ -181,6 +305,33 @@ bool ShardingUtil::SetHloSharding(LoweringContext* lowering_ctx) {
     if (sharding != nullptr && sharding->type() != xla::OpSharding::UNKNOWN) {
       *instruction->mutable_sharding() = *sharding;
       is_sharded = true;
+
+      // Get priority if available
+      const std::vector<int64_t>* priority =
+          xla_node->GetPriority(elem.first.index);
+
+      if (priority != nullptr && !priority->empty()) {
+        // Get tensor rank from instruction shape
+        int64_t rank = 0;
+        if (instruction->has_shape()) {
+          rank = instruction->shape().dimensions_size();
+        }
+
+        // Try to build SDY sharding string with priority
+        std::string sdy_sharding =
+            BuildSdyShardingString(*sharding, *priority, rank);
+
+        if (!sdy_sharding.empty()) {
+          // Use xla.sdy.sharding frontend attribute with priority embedded
+          (*instruction->mutable_frontend_attributes()
+                ->mutable_map())["xla.sdy.sharding"] = sdy_sharding;
+        } else {
+          // Fall back to separate priority attribute for unsupported cases
+          (*instruction->mutable_frontend_attributes()
+                ->mutable_map())["xla.sdy.priority"] =
+              absl::StrJoin(*priority, ",");
+        }
+      }
     }
   }
   return is_sharded;
@@ -838,6 +989,77 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
     // If the at::Tensor data is not present, we need to re-download the
     // tensor from the physical device to CPU. In that case, the value
     // must be present on the backend device.
+    XLA_CHECK((xtensor->CurrentDataHandle() &&
+               xtensor->CurrentDataHandle()->HasValue()) ||
+              device_data_node != nullptr)
+        << "Cannot shard tensor. Data does not present on any device.";
+    std::vector<XLATensorPtr> xla_tensors{xtensor};
+    auto tensors = XLAGraphExecutor::Get()->GetTensors(&xla_tensors);
+    XLA_CHECK_EQ(tensors.size(), 1);
+    cpu_tensor = tensors[0];
+  }
+  auto xla_data = CreateTensorsData(
+      std::vector<at::Tensor>{cpu_tensor},
+      std::vector<XLATensor::ShardingSpecPtr>{new_sharding_spec},
+      std::vector<std::string>{GetVirtualDevice().toString()})[0];
+  xtensor->SetXlaData(xla_data);
+  xtensor->SetShardingSpec(*new_sharding_spec);
+
+  // Register sharded tensor data.
+  XLAGraphExecutor::Get()->RegisterTensor(xtensor->data());
+}
+
+void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
+                                   xla::OpSharding sharding,
+                                   const std::vector<int64_t>& priority) {
+  TORCH_LAZY_COUNTER("XlaMarkShardingWithPriority", 1);
+  XLA_CHECK(UseVirtualDevice())
+      << "Please enable SPMD via `torch_xla.runtime.use_spmd()`";
+  XLA_CHECK(sharding.type() != xla::OpSharding::UNKNOWN)
+      << "Can't explicilty annotate with UNKNOWN sharding type.";
+  XLATensorPtr xtensor = bridge::GetXlaTensor(input);
+
+  // For Non DeviceData IR values, we directly attach the sharding spec to the
+  // xtensor.
+  const DeviceData* device_data_node = nullptr;
+  if (xtensor->CurrentIrValue()) {
+    device_data_node = DeviceData::Cast(xtensor->CurrentIrValue().node.get());
+    if (!device_data_node) {
+      XlaAnnotateCustomSharding(xtensor, sharding);
+      return;
+    }
+  }
+
+  // Create ShardingSpec with priority
+  XLATensor::ShardingSpecPtr new_sharding_spec =
+      std::make_shared<XLATensor::ShardingSpec>(
+          sharding,
+          MakeShapeWithDeviceLayout(
+              xtensor->shape(),
+              static_cast<XlaDeviceType>(xtensor->GetDevice().type())),
+          priority);
+
+  // For data, we need to deal with the data transfers between
+  // host and device.
+  at::Tensor cpu_tensor;
+  if (xtensor->CurrentTensorData().has_value()) {
+    TORCH_LAZY_COUNTER("VirtualDeviceUsage", 1);
+    cpu_tensor = xtensor->CurrentTensorData().value();
+  } else {
+    XLATensor::ShardingSpecPtr current_sharding_spec = xtensor->sharding_spec();
+    if (current_sharding_spec) {
+      if (ShardingUtil::EqualShardingSpecs(*new_sharding_spec,
+                                           *current_sharding_spec)) {
+        return;
+      }
+      auto type = current_sharding_spec->sharding.type();
+      if (type != xla::OpSharding::REPLICATED &&
+          type != xla::OpSharding::UNKNOWN) {
+        XLA_CHECK(false) << "Existing annotation must be cleared first: "
+                         << current_sharding_spec->sharding.DebugString();
+      }
+    }
+
     XLA_CHECK((xtensor->CurrentDataHandle() &&
                xtensor->CurrentDataHandle()->HasValue()) ||
               device_data_node != nullptr)

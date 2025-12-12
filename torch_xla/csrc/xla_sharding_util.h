@@ -129,6 +129,11 @@ class ShardingUtil {
   static void XlaMarkSharding(const at::Tensor& input,
                               xla::OpSharding sharding);
 
+  // XlaMarkSharding with priority for Shardy propagation.
+  // Priority values: lower = higher priority, -1 = no priority set.
+  static void XlaMarkSharding(const at::Tensor& input, xla::OpSharding sharding,
+                              const std::vector<int64_t>& priority);
+
   // Add a custom sharding node IR to an XLATensor. Note that unlike
   // XlaMarkSharding, this will not explicitly set a sharding spec tied to the
   // DeviceData node, nor transfer any sharded data to the device. This serves
@@ -160,6 +165,15 @@ class ShardingUtil {
   static xla::Shape GetAdjustedGlobalShape(const at::Tensor& tensor,
                                            bool minibatch);
 };
+
+// Build SDY sharding string from OpSharding and priority.
+// Format: #sdy.sharding<@mesh, [{"axis_0"}p0, {"axis_1"}p1, ...]>
+// Returns empty string if conversion is not supported.
+// Note: This is a standalone function (not in ShardingUtil class) to avoid
+// pybind dependency in files that need to call it.
+std::string BuildSdyShardingString(const xla::OpSharding& sharding,
+                                   const std::vector<int64_t>& priority,
+                                   int64_t rank);
 
 }  // namespace torch_xla
 

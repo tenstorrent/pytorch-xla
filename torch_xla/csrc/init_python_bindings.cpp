@@ -2537,6 +2537,11 @@ void InitXlaModuleBindings(py::module m) {
            [](const at::Tensor& input, xla::OpSharding sharding) {
             ShardingUtil::XlaMarkSharding(input, sharding);
            })
+      .def("_xla_mark_sharding",
+           [](const at::Tensor& input, xla::OpSharding sharding,
+              const std::vector<int64_t>& priority) {
+            ShardingUtil::XlaMarkSharding(input, sharding, priority);
+           })
       .def("_xla_annotate_custom_sharding",
            [](const at::Tensor& input, xla::OpSharding sharding) {
             XLATensorPtr xtensor = bridge::GetXlaTensor(input);
