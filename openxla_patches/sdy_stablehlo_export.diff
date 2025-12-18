@@ -1,0 +1,33 @@
+diff --git a/xla/pjrt/pjrt_c_api_client.cc b/xla/pjrt/pjrt_c_api_client.cc
+index 0e727c473e..0b684093b9 100644
+--- a/xla/pjrt/pjrt_c_api_client.cc
++++ b/xla/pjrt/pjrt_c_api_client.cc
+@@ -79,6 +79,8 @@ limitations under the License.
+ #include "xla/util.h"
+ #include "xla/xla.pb.h"
+ #include "xla/xla_data.pb.h"
++#include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
+ #include "tsl/platform/casts.h"
+ #include "tsl/platform/fingerprint.h"
++#include "tsl/util/env_var.h"
+ 
+ namespace xla {
+ 
+@@ -1425,6 +1427,17 @@ PjRtCApiExecutable::GetHloModules() const {
+         mlir::OwningOpRef<mlir::ModuleOp> module,
+         ParseMlirModuleString(code, ctx));
+     mlir::PassManager pm(&ctx);
++    bool convert_shlo_to_shardy = false;
++    absl::Status status =
++        tsl::ReadBoolFromEnvVar("CONVERT_SHLO_TO_SHARDY", false,
++                                &convert_shlo_to_shardy);
++    if (!status.ok()) {
++      LOG(WARNING) << "Failed to read CONVERT_SHLO_TO_SHARDY env var: " << status;
++    }
++    if (convert_shlo_to_shardy) {
++      xla::sdy::StablehloExportPipelineOptions options;
++      xla::sdy::addStablehloExportPipeline(pm, options);
++    }
+     pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+     if (mlir::failed(pm.run(module.get())))
+       return xla::Internal("failed to convert to MHLO");
