@@ -9,7 +9,7 @@ index 0e727c473e..0b684093b9 100644
 +#include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
  #include "tsl/platform/casts.h"
  #include "tsl/platform/fingerprint.h"
-+#include "tsl/util/env_var.h"
++#include "xla/tsl/util/env_var.h"
  
  namespace xla {
  

@@ -1,0 +1,14 @@
+diff --git a/xla/pjrt/BUILD b/xla/pjrt/BUILD
+index 1234567..abcdefg 100644
+--- a/xla/pjrt/BUILD
++++ b/xla/pjrt/BUILD
+@@ -971,6 +971,8 @@ cc_library(
+         "@llvm-project//mlir:Pass",
+         "@llvm-project//mlir:Support",
+         "@tsl//tsl/platform:casts",
+         "@tsl//tsl/platform:fingerprint",
++        "//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_export",
++        "//xla/tsl/util:env_var",
+     ],
+ )
+
