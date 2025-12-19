@@ -31,6 +31,7 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/shape.h"
+#include <iostream>
 
 namespace torch_xla {
 namespace runtime {
@@ -922,6 +923,19 @@ PjRtComputationClient::ExecuteReplicated(
             // Without an explicit sharding annotation, the output is implicitly
             // replicated, and we mark explicitly replicated here.
             std::vector<xla::OpSharding>(num_outputs);
+    
+    // [james] - there is a bug where output_shardings_ can only be a 1-element vector,
+    // so sharded output is only supported for a single output
+    // instead, replicate the output sharding for each output 
+    if(pjrt_computation.output_shardings_.has_value() && runtime::sys_util::GetEnvBool("REPLICATE_OUTPUT_SHARDINGS", false)){
+      std::cout << "[JAMES] Replicating output sharding for each output because they are set and REPLICATE_OUTPUT_SHARDINGS is true, for num_outputs: " << num_outputs << std::endl;
+      std::vector<xla::OpSharding> replicated_output_shardings(num_outputs);
+      std::cout << "[JAMES] Output sharding: " << output_shardings[0].DebugString() << " " << output_shardings[0].type().DebugString() <<  std::endl;
+      for(int i = 0; i < num_outputs; i++){
+        replicated_output_shardings[i] = output_shardings[0];
+      }
+      output_shardings = replicated_output_shardings;
+    }
     XLA_CHECK_EQ(output_shardings.size(), num_outputs);
 
     absl::BlockingCounter counter(num_outputs);
