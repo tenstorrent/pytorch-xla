@@ -115,7 +115,11 @@ void ConvertHloToStableHlo(const xla::HloModuleProto* proto,
 
 void ConvertStableHloToSdy(mlir::ModuleOp* mlir_module) {
   mlir::PassManager pm(mlir_module->getContext());
-  xla::sdy::addStablehloImportPipeline(pm, false, false);
+  // Disable constant import to keep stablehlo.constant as-is instead of
+  // converting to sdy.constant, which may not be handled by downstream clients.
+  xla::sdy::addStablehloImportPipeline(pm, /*allowPropagationToArgs=*/{},
+                                       /*allowPropagationToResults=*/{},
+                                       /*enableConstantImport=*/false);
   if (!mlir::succeeded(pm.run(*mlir_module))) {
     XLA_ERROR() << "StableHLO -> SDY conversion failed.\n";
   }

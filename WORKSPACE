@@ -59,6 +59,7 @@ http_archive(
         "//openxla_patches:gpu_nvml.diff",
         "//openxla_patches:gpu_race_condition.diff",
         "//openxla_patches:count_down.diff",
+        "//openxla_patches:stablehlo_import_constant.diff",
     ],
     strip_prefix = "xla-" + xla_hash,
     urls = [

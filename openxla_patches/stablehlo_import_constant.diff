@@ -1,0 +1,39 @@
+diff --git a/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h b/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h
+index 1234567890..abcdefghij 100644
+--- a/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h
++++ b/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h
+@@ -65,7 +65,8 @@ namespace sdy {
+ // - have the same number of elements as the number of args/results.
+ void addStablehloImportPipeline(mlir::OpPassManager& pm,
+                                 mlir::ArrayRef<bool> allowPropagationToArgs,
+-                                mlir::ArrayRef<bool> allowPropagationToResults);
++                                mlir::ArrayRef<bool> allowPropagationToResults,
++                                bool enableConstantImport = true);
+ 
+ // Creates ImportShardingsPass that converts `mhlo.sharding` to `mesh` and
+ // `sdy.sharding`.
+diff --git a/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc b/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc
+index 1234567890..abcdefghij 100644
+--- a/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc
++++ b/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc
+@@ -675,8 +675,9 @@ void registerStablehloImportShardingsPass() {
+ 
+ void addStablehloImportPipeline(mlir::OpPassManager& pm,
+                                 ArrayRef<bool> allowPropagationToArgs,
+-                                ArrayRef<bool> allowPropagationToResults) {
+-  addCommonPreImportPasses(pm);
++                                ArrayRef<bool> allowPropagationToResults,
++                                bool enableConstantImport) {
++  addCommonPreImportPasses(pm, enableConstantImport);
+   pm.addPass(createImportShardingsPass(allowPropagationToArgs,
+                                        allowPropagationToResults));
+   pm.addPass(createStablehloRoundTripShardMapImportPass());
+@@ -690,7 +691,7 @@ void registerStablehloImportPipeline() {
+       "Run passes to import a StableHLO module with `mhlo.shardings` into the "
+       "SDY (Shardy) dialect.",
+       std::bind(addStablehloImportPipeline, std::placeholders::_1,
+-                ArrayRef<bool>(), ArrayRef<bool>()));
++                ArrayRef<bool>(), ArrayRef<bool>(), true));
+ }
+ 
+ }  // namespace sdy
