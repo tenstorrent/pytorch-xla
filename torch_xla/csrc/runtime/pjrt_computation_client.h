@@ -175,6 +175,10 @@ class PjRtComputationClient : public ComputationClient {
   void SetCustomCompileOptions(
       const std::unordered_map<std::string, std::string>& options) override;
 
+  void SetCustomDeviceOptions(
+      int device_id,
+      const std::unordered_map<std::string, std::string>& options) override;
+
   // Creates a new instance of PjRtComputationClient and initializes it.
   static absl::StatusOr<absl_nonnull std::unique_ptr<PjRtComputationClient>>
   Create();
@@ -208,8 +212,15 @@ class PjRtComputationClient : public ComputationClient {
   // only for testing.
   std::function<absl::Status()> fake_xla_compile_ = nullptr;
   std::unordered_map<std::string, std::string> custom_compile_options_;
+  // Map from device_id -> options for per-device configuration
+  std::unordered_map<int, std::unordered_map<std::string, std::string>>
+      custom_device_options_;
 
   xla::PjRtDevice* StringToPjRtDevice(const std::string& device);
+
+  // Sends device options to the PJRT plugin via TT vendor extension.
+  // Called before execution to set device options on the plugin side.
+  void SendDeviceOptionsToPlugin(int device_id);
 
   struct PjRtData : public Data {
     PjRtData(std::string device, xla::Shape device_shape)

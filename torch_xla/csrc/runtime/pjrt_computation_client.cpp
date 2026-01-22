@@ -756,6 +756,9 @@ PjRtComputationClient::ExecuteComputation(
   xla::PjRtDevice* pjrt_device = StringToPjRtDevice(device);
   XLA_CHECK(pjrt_device->IsAddressable()) << pjrt_device->DebugString();
 
+  // Send device options to the plugin before execution.
+  SendDeviceOptionsToPlugin(pjrt_device->local_device_id().value());
+
   std::vector<xla::PjRtBuffer*> buffers;
   buffers.reserve(arguments.size());
   for (auto& argument : arguments) {
@@ -860,6 +863,12 @@ PjRtComputationClient::ExecuteReplicated(
           }
         });
     counter.Wait();
+  }
+
+  // Send device options to the plugin for all devices before execution.
+  for (const auto& device : devices) {
+    xla::PjRtDevice* pjrt_device = StringToPjRtDevice(device);
+    SendDeviceOptionsToPlugin(pjrt_device->local_device_id().value());
   }
 
   xla::ExecuteOptions execute_options;
@@ -1104,6 +1113,116 @@ void PjRtComputationClient::SetCustomCompileOptions(
   custom_compile_options_.clear();
   for (const auto& [key, value] : options) {
     custom_compile_options_[key] = value;
+  }
+}
+
+void PjRtComputationClient::SetCustomDeviceOptions(
+    int device_id,
+    const std::unordered_map<std::string, std::string>& options) {
+  custom_device_options_[device_id].clear();
+  for (const auto& [key, value] : options) {
+    custom_device_options_[device_id][key] = value;
+  }
+}
+
+// TT-specific PJRT extension type ID for SetDeviceOptions.
+// Must match the value defined in tt-xla's tt_pjrt_device_options_extension.h
+constexpr PJRT_Extension_Type kPJRT_Extension_Type_TT_SetDeviceOptions =
+    static_cast<PJRT_Extension_Type>(0x1001);
+
+// TT SetDeviceOptions extension arguments structure.
+// Must match the layout defined in tt-xla's tt_pjrt_device_options_extension.h
+struct PJRT_TT_SetDeviceOptions_Args {
+  size_t struct_size;
+  PJRT_Extension_Base* extension_start;
+  int device_id;
+  const PJRT_NamedValue* device_options;
+  size_t num_device_options;
+};
+
+// TT SetDeviceOptions extension function pointer type.
+typedef PJRT_Error* (*PJRT_TT_SetDeviceOptions)(
+    PJRT_TT_SetDeviceOptions_Args* args);
+
+// TT SetDeviceOptions extension structure.
+struct PJRT_TT_SetDeviceOptions_Extension {
+  size_t struct_size;
+  PJRT_Extension_Type type;
+  PJRT_Extension_Base* next;
+  PJRT_TT_SetDeviceOptions set_device_options;
+};
+
+void PjRtComputationClient::SendDeviceOptionsToPlugin(int device_id) {
+  // Check if we have device options for this device.
+  auto it = custom_device_options_.find(device_id);
+  if (it == custom_device_options_.end() || it->second.empty()) {
+    return;
+  }
+
+  // Get the PJRT C API client.
+  auto* c_api_client = dynamic_cast<xla::PjRtCApiClient*>(client_.get());
+  if (!c_api_client) {
+    // Not a C API client, skip.
+    return;
+  }
+
+  const PJRT_Api* pjrt_api = c_api_client->pjrt_c_api();
+  if (!pjrt_api || !pjrt_api->extension_start) {
+    return;
+  }
+
+  // Find the TT SetDeviceOptions extension.
+  const PJRT_Extension_Base* ext =
+      reinterpret_cast<const PJRT_Extension_Base*>(pjrt_api->extension_start);
+  while (ext != nullptr &&
+         ext->type != kPJRT_Extension_Type_TT_SetDeviceOptions) {
+    ext = ext->next;
+  }
+
+  if (ext == nullptr) {
+    // Extension not found, this is not a TT plugin.
+    return;
+  }
+
+  const auto* tt_ext =
+      reinterpret_cast<const PJRT_TT_SetDeviceOptions_Extension*>(ext);
+
+  // Convert options map to PJRT_NamedValue array.
+  const auto& options = it->second;
+  std::vector<PJRT_NamedValue> named_values;
+  named_values.reserve(options.size());
+
+  for (const auto& [key, value] : options) {
+    PJRT_NamedValue nv;
+    nv.struct_size = PJRT_NamedValue_STRUCT_SIZE;
+    nv.extension_start = nullptr;
+    nv.name = key.c_str();
+    nv.name_size = key.size();
+    nv.type = PJRT_NamedValue_kString;
+    nv.string_value = value.c_str();
+    nv.value_size = value.size();
+    named_values.push_back(nv);
+  }
+
+  // Call the extension.
+  PJRT_TT_SetDeviceOptions_Args args;
+  args.struct_size = sizeof(PJRT_TT_SetDeviceOptions_Args);
+  args.extension_start = nullptr;
+  args.device_id = device_id;
+  args.device_options = named_values.data();
+  args.num_device_options = named_values.size();
+
+  PJRT_Error* error = tt_ext->set_device_options(&args);
+  if (error) {
+    TF_VLOG(1) << "TT SetDeviceOptions extension call failed";
+    PJRT_Error_Destroy_Args destroy_args;
+    destroy_args.struct_size = sizeof(PJRT_Error_Destroy_Args);
+    destroy_args.extension_start = nullptr;
+    destroy_args.error = error;
+    pjrt_api->PJRT_Error_Destroy(&destroy_args);
+  } else {
+    TF_VLOG(3) << "Sent " << options.size() << " device options to TT plugin "
+               << "for device " << device_id;
   }
 }
 

@@ -3235,6 +3235,16 @@ void InitXlaModuleBindings(py::module m) {
              runtime::GetComputationClientOrDie()->SetCustomCompileOptions(
                  options);
            })
+      .def("_set_custom_device_options",
+           [](int device_id, const py::dict& device_options) {
+             std::unordered_map<std::string, std::string> options;
+             for (const auto& item : device_options) {
+               std::string key = item.first.cast<std::string>();
+               options[key] = py::str(item.second).cast<std::string>();
+             }
+             runtime::GetComputationClientOrDie()->SetCustomDeviceOptions(
+                 device_id, options);
+           })
       .def(
           // from an XLA tensor to a PyCapsule.
           // When consuming the PyCapsule, we should synchronize

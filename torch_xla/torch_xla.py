@@ -281,4 +281,20 @@ def set_custom_compile_options(
   if options is None:
     options = {}
   torch_xla._XLAC._set_custom_compile_options(options)
+
+
+def set_custom_device_options(
+    device_id: int,
+    options: Optional[dict] = None,
+):
+  """Sets custom device options for a specific device.
+
+  Args:
+    device_id: The device ID to set options for.
+    options: A dictionary of custom device options to be set.
+      The keys are strings and the values can be of type bool, float, int, or str.
+  """
+  if options is None:
+    options = {}
+  torch_xla._XLAC._set_custom_device_options(device_id, options)
   

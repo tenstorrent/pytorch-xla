@@ -447,6 +447,10 @@ class ComputationClient {
   virtual void SetCustomCompileOptions(
       const std::unordered_map<std::string, std::string>& options) = 0;
 
+  virtual void SetCustomDeviceOptions(
+      int device_id,
+      const std::unordered_map<std::string, std::string>& options) = 0;
+
  protected:
   static constexpr auto spmd_device_str = "SPMD:0";
 
