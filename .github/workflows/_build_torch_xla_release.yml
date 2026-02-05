@@ -90,15 +90,6 @@ jobs:
         shell: bash
         id: build_wheels
         run: |
-          # Ensure cmake is accessible
-          which cmake || echo "cmake not in PATH"
-          cmake --version || echo "cmake version failed"
-          
-          # Create symlink if cmake is not in /usr/local/bin
-          if [ ! -f /usr/local/bin/cmake ]; then
-            ln -sf $(which cmake) /usr/local/bin/cmake || true
-          fi
-          
           apt-get update && apt-get install -y curl git build-essential
 
           # Clean up any existing pyenv installation
@@ -113,15 +104,12 @@ jobs:
 
           # Install essential packages for Python ${{ inputs.python_version }}
           python${{ inputs.python_version }} -m pip install --upgrade pip
-          python${{ inputs.python_version }} -m pip install pyyaml setuptools wheel numpy typing_extensions requests
+          python${{ inputs.python_version }} -m pip install cmake pyyaml setuptools wheel numpy typing_extensions requests
 
           cd /tmp
           git clone --depth 1 --recursive --branch v${{ inputs.torch_version }} https://github.com/pytorch/pytorch.git
           cd pytorch/
           git clone --recursive --branch ${{ inputs.xla_branch || 'master' }} https://github.com/tenstorrent/pytorch-xla.git xla
-
-          # Ensure cmake is in PATH for the build process
-          export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:$(dirname $(which cmake))"
 
           (
             # Build PyTorch
