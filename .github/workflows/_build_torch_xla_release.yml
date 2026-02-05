@@ -1,7 +1,11 @@
-name: build-torch-xla
+name: build-torch-xla-release
 on:
   workflow_call:
     inputs:
+      python_version:
+        description: 'Python version to build (e.g., 3.11, 3.12)'
+        required: true
+        type: string
       torch_version:
         description: 'Torch version to build (default: 2.9.0)'
         required: false
@@ -18,6 +22,10 @@ on:
         value: ${{ jobs.build-wheels.outputs.artifact_name }}
   workflow_dispatch:
     inputs:
+      python_version:
+        description: 'Python version to build (e.g., 3.11, 3.12)'
+        required: true
+        type: string
       torch_version:
         description: 'Torch version to build (default: 2.9.0)'
         required: false
@@ -33,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 540
     env:
-      ARTIFACT_NAME: install-artifact-torch-xla-release
+      ARTIFACT_NAME: install-artifact-torch-xla-release-${{ inputs.python_version }}
       GIT_VERSIONED_XLA_BUILD: 1
     container:
       image: us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/development:tpu
@@ -82,7 +90,15 @@ jobs:
         shell: bash
         id: build_wheels
         run: |
-          cmake --version
+          # Ensure cmake is accessible
+          which cmake || echo "cmake not in PATH"
+          cmake --version || echo "cmake version failed"
+          
+          # Create symlink if cmake is not in /usr/local/bin
+          if [ ! -f /usr/local/bin/cmake ]; then
+            ln -sf $(which cmake) /usr/local/bin/cmake || true
+          fi
+          
           apt-get update && apt-get install -y curl git build-essential
 
           # Clean up any existing pyenv installation
@@ -91,19 +107,21 @@ jobs:
           curl https://pyenv.run | bash
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
-          pyenv install 3.11
-          pyenv global 3.11
-          ln -sf $(pyenv which python3.11) /usr/local/bin/python3.11
+          pyenv install ${{ inputs.python_version }}
+          pyenv global ${{ inputs.python_version }}
+          ln -sf $(pyenv which python${{ inputs.python_version }}) /usr/local/bin/python${{ inputs.python_version }}
 
-          # Install essential packages for Python 3.11
-          python3.11 -m pip install --upgrade pip
-          python3.11 -m pip install pyyaml setuptools wheel numpy typing_extensions requests
+          # Install essential packages for Python ${{ inputs.python_version }}
+          python${{ inputs.python_version }} -m pip install --upgrade pip
+          python${{ inputs.python_version }} -m pip install pyyaml setuptools wheel numpy typing_extensions requests
 
           cd /tmp
           git clone --depth 1 --recursive --branch v${{ inputs.torch_version }} https://github.com/pytorch/pytorch.git
           cd pytorch/
           git clone --recursive --branch ${{ inputs.xla_branch || 'master' }} https://github.com/tenstorrent/pytorch-xla.git xla
 
+          # Ensure cmake is in PATH for the build process
+          export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:$(dirname $(which cmake))"
 
           (
             # Build PyTorch
@@ -111,15 +129,15 @@ jobs:
             export CFLAGS+="-w -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
             export CXXFLAGS+="-w -Wno-error=maybe-uninitialized -Wno-error=uninitialized -Wno-error=restrict"
             # copy pre-built wheels from cache
-            MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
-            MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py develop
+            MAX_JOBS=8 BAZEL_JOBS=8 python${{ inputs.python_version }} setup.py bdist_wheel
+            MAX_JOBS=8 BAZEL_JOBS=8 python${{ inputs.python_version }} setup.py develop
 
             rm -rf .git/
           )
 
           # Build PyTorch/XLA
           cd xla/
-          MAX_JOBS=8 BAZEL_JOBS=8 python3.11 setup.py bdist_wheel
+          MAX_JOBS=8 BAZEL_JOBS=8 python${{ inputs.python_version }} setup.py bdist_wheel
 
           # Collect wheels
           mkdir -p /dist

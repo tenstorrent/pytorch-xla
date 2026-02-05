@@ -4,6 +4,15 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Python version to build'
+        required: false
+        type: choice
+        options:
+          - '3.11'
+          - '3.12'
+        default: '3.11'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' }}
@@ -19,17 +28,29 @@ jobs:
       head_sha: ${{ github.sha }}
 
   build-torch-xla:
-    name: "Build PyTorch/XLA for Python 3.11"
+    name: "Build PyTorch/XLA Python ${{ matrix.python_version }}"
     if: needs.check_code_changes.outputs.has_code_changes == 'true'
-    uses: ./.github/workflows/_build_torch_xla_3.11.yml
     needs: check_code_changes
+    strategy:
+      matrix:
+        # On push to master: build all versions ["3.11", "3.12"]
+        # On manual trigger: build only the selected inputs.python_version
+        python_version: ${{ github.event_name == 'push' && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
+    uses: ./.github/workflows/_build_torch_xla_release.yml
+    with:
+      python_version: ${{ matrix.python_version }}
 
   publish-torch-xla:
-    name: "Publish PyTorch/XLA"
-    uses: ./.github/workflows/_publish_torch_xla.yml
+    name: "Publish PyTorch/XLA Python ${{ matrix.python_version }}"
+    if: ${{ !cancelled() && !failure() }}
     needs: build-torch-xla
+    strategy:
+      matrix:
+        # Matches the build job matrix to publish the same versions that were built
+        python_version: ${{ github.event_name == 'push' && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
+    uses: ./.github/workflows/_publish_torch_xla.yml
     secrets: inherit
     permissions:
       id-token: write
     with:
-      artifact_name: ${{ needs.build-torch-xla.outputs.artifact_name }}
+      artifact_name: install-artifact-torch-xla-release-${{ matrix.python_version }}
