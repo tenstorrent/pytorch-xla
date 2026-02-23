@@ -63,7 +63,7 @@ class AtenSource : public TensorSource {
     tensor_ = std::move(
         tensor.to(at::TensorOptions().device(at::kCPU).dtype(target_torch_type),
                   /*non_blocking=*/false,
-                  /*copy=*/true, at::MemoryFormat::Contiguous));
+                  /*copy=*/false, at::MemoryFormat::Contiguous));
   }
 
   const void* data() const override { return tensor_.const_data_ptr(); }
