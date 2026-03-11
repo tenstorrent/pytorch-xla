@@ -7,10 +7,10 @@ on:
         required: true
         type: string
       torch_version:
-        description: 'Torch version to build (default: 2.9.0)'
+        description: 'Torch version to build (default: 2.10.0)'
         required: false
         type: string
-        default: '2.9.0'
+        default: '2.10.0'
       xla_branch:
         description: 'PyTorch-XLA branch to build (default: master)'
         required: false
@@ -27,10 +27,10 @@ on:
         required: true
         type: string
       torch_version:
-        description: 'Torch version to build (default: 2.9.0)'
+        description: 'Torch version to build (default: 2.10.0)'
         required: false
         type: string
-        default: '2.9.0'
+        default: '2.10.0'
       xla_branch:
         description: 'PyTorch-XLA branch to build (default: master)'
         required: false
