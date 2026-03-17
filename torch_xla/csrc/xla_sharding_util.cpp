@@ -492,6 +492,7 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
         }
         
         if (needs_padding) {
+          // Padding starts from the last dimension
           std::reverse(pads.begin(), pads.end());
           shards[i] = at::constant_pad_nd(
               shards[i], c10::IntArrayRef(pads.data(), pads.size()), 0);
