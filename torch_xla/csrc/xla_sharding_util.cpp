@@ -481,15 +481,22 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
     if (shards.size() > 0 && padded) {
       for (size_t i = 0; i < shards.size(); ++i) {
         std::vector<long> pads;
+        bool needs_padding = false;
+
         for (size_t j = 0; j < shard_shape.size(); ++j) {
           XLA_CHECK_GE(shard_shape[j], shards[i].sizes().at(j));
-          pads.push_back(shard_shape[j] - shards[i].sizes().at(j));
+          long pad_amount = shard_shape[j] - shards[i].sizes().at(j);
+          needs_padding |= (pad_amount != 0);
+          pads.push_back(pad_amount);
           pads.push_back(0);  // no padding on lhs
         }
-        // Padding starts from the last dimension
-        std::reverse(pads.begin(), pads.end());
-        shards[i] = at::constant_pad_nd(
-            shards[i], c10::IntArrayRef(pads.data(), pads.size()), 0);
+        
+        if (needs_padding) {
+          // Padding starts from the last dimension
+          std::reverse(pads.begin(), pads.end());
+          shards[i] = at::constant_pad_nd(
+              shards[i], c10::IntArrayRef(pads.data(), pads.size()), 0);
+        }
       }
     }
   } else {
