@@ -23,7 +23,7 @@ namespace torch_xla {
 namespace {
 
 struct XLAGuardImpl : public c10::impl::DeviceGuardImplInterface {
-  at::DeviceType type() const override { return at::DeviceType::XLA; }
+  at::DeviceType type() const override { return at::DeviceType::PrivateUse1; }
 
   c10::Device exchangeDevice(c10::Device device) const override {
     return bridge::SetCurrentDevice(device);
@@ -61,13 +61,13 @@ struct XLAGuardImpl : public c10::impl::DeviceGuardImplInterface {
   }
 };
 
-C10_REGISTER_GUARD_IMPL(XLA, XLAGuardImpl);
+C10_REGISTER_GUARD_IMPL(PrivateUse1, XLAGuardImpl);
 
 }  // namespace
 
 XLATensorImpl::XLATensorImpl(XLATensor&& tensor)
-    : c10::TensorImpl(c10::DispatchKeySet{c10::DispatchKey::XLA,
-                                          c10::DispatchKey::AutogradXLA},
+    : c10::TensorImpl(c10::DispatchKeySet{c10::DispatchKey::PrivateUse1,
+                                          c10::DispatchKey::AutogradPrivateUse1},
                       GetTypeMeta(tensor),
                       bridge::XlaDeviceToAtenDevice(tensor.GetDevice())),
       tensor_(c10::make_intrusive<XLATensor>(std::move(tensor))) {

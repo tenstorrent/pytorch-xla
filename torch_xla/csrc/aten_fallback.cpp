@@ -457,7 +457,7 @@ void xla_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
   }
 }
 
-TORCH_LIBRARY_IMPL(_, XLA, m) {
+TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(torch::CppFunction::makeFromBoxedFunction<&xla_fallback>());
 }
 

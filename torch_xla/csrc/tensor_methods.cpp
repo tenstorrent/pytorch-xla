@@ -2809,7 +2809,7 @@ XLATensorPtr randperm(int64_t n, const torch::lazy::BackendDevice& device,
   // These are all PyTorch defaults. PyTorch/XLA doesn't support non default
   // params here yet.
   torch::lazy::NodePtr node = torch_xla::MakeNode<RandPerm>(
-      n, at::ScalarType::Long, at::Layout::Strided, at::DeviceType::XLA,
+      n, at::ScalarType::Long, at::Layout::Strided, at::DeviceType::PrivateUse1,
       /*pin_memory=*/false);
   return XLATensor::Create(node, device, scalar_type);
 }

@@ -46,13 +46,13 @@ at::Tensor nms_kernel(const at::Tensor& boxes, const at::Tensor& scores,
 
 }  // namespace
 
-TORCH_LIBRARY_IMPL(torchvision, XLA, m) {
+TORCH_LIBRARY_IMPL(torchvision, PrivateUse1, m) {
   m.impl(TORCH_SELECTIVE_NAME("torchvision::nms"), TORCH_FN(nms_kernel));
 }
 
 // Register generated XLANativeFunctions::einsum as aten::einsum for XLA key.
 // This utilizes the implementation from `xla/torch_xla/csrc/aten_xla_type.cpp`.
-TORCH_LIBRARY_IMPL(aten, XLA, m) {
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("aten::einsum", TORCH_FN(XLANativeFunctions::einsum));
 }
 

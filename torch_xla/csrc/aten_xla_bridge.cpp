@@ -317,7 +317,7 @@ std::optional<torch::lazy::BackendDevice> GetXlaDevice(
 
 std::optional<torch::lazy::BackendDevice> GetXlaDevice(
     const c10::Device& device) {
-  if (device.type() != at::kXLA) {
+  if (device.type() != at::kPrivateUse1) {
     return std::nullopt;
   }
   return AtenDeviceToXlaDevice(device);
@@ -336,7 +336,7 @@ std::vector<torch::lazy::BackendDevice> GetBackendDevices() {
 }
 
 torch::lazy::BackendDevice AtenDeviceToXlaDevice(const c10::Device& device) {
-  XLA_CHECK_EQ(device.type(), at::kXLA) << device;
+  XLA_CHECK_EQ(device.type(), at::kPrivateUse1) << device;
   int ordinal = device.has_index() ? device.index() : -1;
   if (ordinal < 0) {
     c10::Device current_device = GetCurrentAtenDevice();
@@ -354,9 +354,9 @@ c10::Device XlaDeviceToAtenDevice(const torch::lazy::BackendDevice& device) {
   // TODO(yeounoh) until we expose SPMD virtual device to the frontend, this
   // will just be `XLA:0`.
   if (device.type() == (int8_t)XlaDeviceType::SPMD) {
-    return c10::Device(at::kXLA, (size_t)0);
+    return c10::Device(at::kPrivateUse1, (size_t)0);
   }
-  return c10::Device(at::kXLA,
+  return c10::Device(at::kPrivateUse1,
                      AtenXlaDeviceMapper::Get()->GetDeviceOrdinal(device));
 }
 
