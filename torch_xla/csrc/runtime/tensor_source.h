@@ -61,9 +61,11 @@ class AtenSource : public TensorSource {
     // current PjRt client has access. If so, we don't need to go through the
     // CPU.
     tensor_ = std::move(
-        tensor.to(at::TensorOptions().device(at::kCPU).dtype(target_torch_type),
-                  /*non_blocking=*/false,
-                  /*copy=*/false, at::MemoryFormat::Contiguous));
+        tensor
+            .to(at::TensorOptions().device(at::kCPU).dtype(target_torch_type),
+                /*non_blocking=*/false,
+                /*copy=*/false, at::MemoryFormat::Contiguous)
+            .contiguous());
   }
 
   const void* data() const override { return tensor_.const_data_ptr(); }
