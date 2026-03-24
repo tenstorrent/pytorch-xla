@@ -1,6 +1,7 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -275,6 +276,11 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
 
     total_size += xla::ShapeUtil::ByteSizeOf(tensor->shape());
 
+    std::cout << "[TransferToDevice] BufferFromHostBuffer: data_ptr="
+              << tensor->data()
+              << ", size=" << xla::ShapeUtil::ByteSizeOf(tensor->shape())
+              << ", device=" << tensor->device()
+              << std::endl;
     std::shared_ptr<xla::PjRtBuffer> buffer =
         std::move(client_
                       ->BufferFromHostBuffer(

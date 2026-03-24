@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <list>
 #include <numeric>
 #include <thread>
@@ -859,6 +860,11 @@ std::vector<torch::lazy::BackendDataPtr> CreateTensorsData(
 
       std::vector<std::string> local_devices =
           runtime::GetComputationClientOrDie()->GetLocalDevices();
+      std::cout << "[CreateTensorsData] Before ShardTensor: tensor data_ptr="
+                << tensors[i].data_ptr()
+                << ", sizes=" << tensors[i].sizes()
+                << ", dtype=" << tensors[i].dtype()
+                << std::endl;
       // Shards the input tensors with padding, to split evenly.
       // The execution requires consistent shard sizes, and the zero-padded
       // values should be ignored.

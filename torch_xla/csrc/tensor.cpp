@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -556,14 +557,27 @@ void XLATensor::SetTensor(at::Tensor tensor) {
 }
 
 void XLATensor::UpdateFromTensor(at::Tensor tensor, bool sync) {
+  std::cout << "[UpdateFromTensor] Enter: sync=" << sync
+            << ", input data_ptr=" << tensor.data_ptr()
+            << ", sizes=" << tensor.sizes()
+            << ", dtype=" << tensor.dtype()
+            << std::endl;
   torch::lazy::BackendDevice device = GetDevice();
   if (sync) {
     at::Tensor typed_tensor =
         torch::lazy::CopyTensor(tensor, dtype(), /*copy=*/false);
+    std::cout << "[UpdateFromTensor] sync=true: CopyTensor(copy=false) data_ptr="
+              << typed_tensor.data_ptr()
+              << ", same_as_input=" << (typed_tensor.data_ptr() == tensor.data_ptr())
+              << std::endl;
     SetIrValue(GetIrValueForTensor(typed_tensor, device),
                /*inplace=*/true);
   } else {
     at::Tensor coyped_tensor = torch::lazy::CopyTensor(tensor, dtype());
+    std::cout << "[UpdateFromTensor] sync=false: CopyTensor(copy=true) data_ptr="
+              << coyped_tensor.data_ptr()
+              << ", same_as_input=" << (coyped_tensor.data_ptr() == tensor.data_ptr())
+              << std::endl;
     SetTensorData(coyped_tensor);
     data()->handle = nullptr;
     // if shape is different,

@@ -3,6 +3,7 @@
 #include <ATen/TensorIndexing.h>
 
 #include <cmath>
+#include <iostream>
 #include <unordered_map>
 
 #include "absl/synchronization/blocking_counter.h"
@@ -447,38 +448,94 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
     sharding = shardings->sharding;
     minibatch = shardings->minibatch;
   }
+
+  std::cout << "[ShardTensor] === Enter ShardTensor ===" << std::endl;
+  std::cout << "[ShardTensor] Input tensor: sizes=" << tensor.sizes()
+            << ", strides=" << tensor.strides()
+            << ", dtype=" << tensor.dtype()
+            << ", device=" << tensor.device()
+            << ", data_ptr=" << tensor.data_ptr()
+            << ", is_contiguous=" << tensor.is_contiguous()
+            << ", storage_offset=" << tensor.storage_offset()
+            << ", numel=" << tensor.numel()
+            << std::endl;
+  std::cout << "[ShardTensor] Sharding type=" << sharding.type()
+            << " (REPLICATED=0, OTHER=3, UNKNOWN=5)"
+            << ", minibatch=" << minibatch
+            << ", num_devices=" << devices.size()
+            << ", padded=" << padded
+            << std::endl;
+
   TF_VLOG(5) << "ShardTensor with sharding type(" << sharding.type()
              << ")... and minibatch = " << minibatch << std::endl;
   auto device_index = build_index_map(devices);
   std::vector<at::Tensor> shards(devices.size());
   if (shardings == nullptr || sharding.type() == xla::OpSharding::REPLICATED ||
       sharding.type() == xla::OpSharding::UNKNOWN) {
+    std::cout << "[ShardTensor] REPLICATED/UNKNOWN/null: filling all "
+              << shards.size() << " shards with same tensor (shallow copy, NO data copy)"
+              << std::endl;
     std::fill_n(shards.begin(), shards.size(), tensor);
   } else if (sharding.type() == xla::OpSharding::OTHER) {
     XLA_CHECK(sharding.tile_shape().dimensions_size() <= 2);
     XLA_CHECK(tensor.sizes().size() >= sharding.tile_shape().dimensions_size());
 
     auto shard_shape = GetShardShape(shardings);
+    std::cout << "[ShardTensor] OTHER sharding: shard_shape=[";
+    for (size_t i = 0; i < shard_shape.size(); ++i) {
+      std::cout << shard_shape[i] << (i + 1 < shard_shape.size() ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
 
     std::vector<std::vector<at::indexing::TensorIndex>> shard_indices;
     if (minibatch) {
+      std::cout << "[ShardTensor] Using minibatch shard indices" << std::endl;
       shard_indices = GetShardIndicesForMinibatchTensor(shard_shape, devices);
     } else {
+      std::cout << "[ShardTensor] Using replica-and-indices shard indices" << std::endl;
       auto replica_and_indices = GetShardReplicaAndIndicesForDevices(
           shard_shape, tensor.sizes().vec(), sharding, devices);
       // Extract only the indices, the replica_id is unnecessary for sharding.
       std::transform(replica_and_indices.begin(), replica_and_indices.end(),
                      std::back_inserter(shard_indices),
                      [](auto& pair) { return pair.second; });
+      for (size_t si = 0; si < shard_indices.size(); ++si) {
+        std::cout << "[ShardTensor]   shard_indices[" << si << "]: [";
+        for (size_t di = 0; di < shard_indices[si].size(); ++di) {
+          const auto& idx = shard_indices[si][di];
+          if (idx.is_slice()) {
+            std::cout << "Slice(" << idx.slice().start()
+                      << "," << idx.slice().stop() << ")";
+          } else if (idx.is_ellipsis()) {
+            std::cout << "Ellipsis";
+          } else if (idx.is_integer()) {
+            std::cout << idx.integer();
+          }
+          if (di + 1 < shard_indices[si].size()) std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+      }
     }
-
+    std::cout << "[ShardTensor] Slicing " << shard_indices.size()
+              << " shards from input tensor..." << std::endl;
     for (size_t i = 0; i < shard_indices.size(); i++) {
       at::Tensor shard = tensor.index(
           c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
+      bool shard_is_contiguous = shard.is_contiguous();
+      void* shard_pre_contig_ptr = shard.data_ptr();
       shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
+      bool did_copy = (shards[i].data_ptr() != shard_pre_contig_ptr);
+      std::cout << "[ShardTensor]   shard[" << i << "]: sizes=" << shards[i].sizes()
+                << ", data_ptr=" << shards[i].data_ptr()
+                << ", was_contiguous=" << shard_is_contiguous
+                << ", .contiguous() caused copy=" << did_copy
+                << ", shares_storage_with_input="
+                << (shards[i].storage().data_ptr().get() == tensor.storage().data_ptr().get())
+                << std::endl;
     }
     // Zero-pad to the right to ensure the sizes are even
     if (shards.size() > 0 && padded) {
+      std::cout << "[ShardTensor] Applying zero-padding to shards..." << std::endl;
       for (size_t i = 0; i < shards.size(); ++i) {
         std::vector<long> pads;
         bool needs_padding = false;
@@ -502,6 +559,9 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
   } else {
     XLA_CHECK(false) << "Unsupported OpSharding type " << sharding.type();
   }
+
+  std::cout << "[ShardTensor] === Exit ShardTensor: returning "
+            << shards.size() << " shards ===" << std::endl;
   return shards;
 }
 
@@ -822,6 +882,11 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
     // data transfer to the device and retain the original data on the
     // host, until the sharded data transfer.
     cpu_tensor = xtensor->CurrentTensorData().value();
+    std::cout << "[XlaMarkSharding] Using CurrentTensorData (no device download)"
+              << ", data_ptr=" << cpu_tensor.data_ptr()
+              << ", sizes=" << cpu_tensor.sizes()
+              << ", dtype=" << cpu_tensor.dtype()
+              << std::endl;
   } else {
     // A new input tensor is not expected to be sharded. But sometimes,
     // the same input is called for sharding annotation over multiple steps,
@@ -849,10 +914,16 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
                xtensor->CurrentDataHandle()->HasValue()) ||
               device_data_node != nullptr)
         << "Cannot shard tensor. Data does not present on any device.";
+    std::cout << "[XlaMarkSharding] No CurrentTensorData, downloading from device..."
+              << std::endl;
     std::vector<XLATensorPtr> xla_tensors{xtensor};
     auto tensors = XLAGraphExecutor::Get()->GetTensors(&xla_tensors);
     XLA_CHECK_EQ(tensors.size(), 1);
     cpu_tensor = tensors[0];
+    std::cout << "[XlaMarkSharding] Downloaded tensor: data_ptr=" << cpu_tensor.data_ptr()
+              << ", sizes=" << cpu_tensor.sizes()
+              << ", dtype=" << cpu_tensor.dtype()
+              << std::endl;
   }
   auto xla_data = CreateTensorsData(
       std::vector<at::Tensor>{cpu_tensor},

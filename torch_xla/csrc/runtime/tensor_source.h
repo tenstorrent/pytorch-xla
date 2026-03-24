@@ -4,6 +4,7 @@
 #include <ATen/Tensor.h>
 #include <torch/csrc/lazy/core/metrics.h>
 
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,9 +55,18 @@ class AtenSource : public TensorSource {
   AtenSource(const at::Tensor& tensor, xla::Shape shape, std::string device)
       : TensorSource(std::move(device)), shape_(std::move(shape)) {
     at::ScalarType target_torch_type = TorchTypeFromXlaType(primitive_type());
-    if (target_torch_type != tensor.type().scalarType()) {
+    bool dtype_mismatch = (target_torch_type != tensor.type().scalarType());
+    if (dtype_mismatch) {
       TORCH_LAZY_COUNTER("AtenSourceDowncasts", 1);
     }
+    std::cout << "[AtenSource] input data_ptr=" << tensor.data_ptr()
+              << ", sizes=" << tensor.sizes()
+              << ", dtype=" << tensor.dtype()
+              << ", target_dtype=" << target_torch_type
+              << ", dtype_mismatch=" << dtype_mismatch
+              << ", is_contiguous=" << tensor.is_contiguous()
+              << ", device=" << tensor.device()
+              << std::endl;
     // TODO(ysiraichi): check, first, if tensor lives in a device that the
     // current PjRt client has access. If so, we don't need to go through the
     // CPU.
@@ -66,6 +76,9 @@ class AtenSource : public TensorSource {
                 /*non_blocking=*/false,
                 /*copy=*/false, at::MemoryFormat::Contiguous)
             .contiguous());
+    std::cout << "[AtenSource] after .to(): data_ptr=" << tensor_.data_ptr()
+              << ", same_as_input=" << (tensor_.data_ptr() == tensor.data_ptr())
+              << std::endl;
   }
 
   const void* data() const override { return tensor_.const_data_ptr(); }
