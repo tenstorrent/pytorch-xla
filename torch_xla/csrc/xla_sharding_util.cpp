@@ -438,6 +438,39 @@ ShardingUtil::GetShardReplicaAndIndicesForDevices(
   return shard_indices;
 }
 
+bool TensorIndexEqual(const at::indexing::TensorIndex& a, const at::indexing::TensorIndex& b) {
+  if (a.is_none() && b.is_none()) return true;
+  if (a.is_ellipsis() && b.is_ellipsis()) return true;
+
+  if (a.is_integer() && b.is_integer()) {
+      return a.integer() == b.integer();
+  }
+
+  if (a.is_boolean() && b.is_boolean()) {
+      return a.boolean() == b.boolean();
+  }
+
+  if (a.is_slice() && b.is_slice()) {
+      return a.slice().start() == b.slice().start() &&
+             a.slice().stop()  == b.slice().stop() &&
+             a.slice().step()  == b.slice().step();
+  }
+
+  if (a.is_tensor() && b.is_tensor()) {
+      return torch::equal(a.tensor(), b.tensor());
+  }
+
+  return false;
+}
+
+bool VecTensorIndexEqual(const std::vector<at::indexing::TensorIndex>& a, const std::vector<at::indexing::TensorIndex>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); i++) {
+    if (!TensorIndexEqual(a[i], b[i])) return false;
+  }
+  return true;
+}
+
 std::vector<at::Tensor> ShardingUtil::ShardTensor(
     const at::Tensor& tensor, const XLATensor::ShardingSpecPtr shardings,
     const std::vector<std::string>& devices, bool padded) {
@@ -472,10 +505,33 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
                      [](auto& pair) { return pair.second; });
     }
 
+    // shard_indices is vector<vector<TensorIndex>>:
+    //   - shard_indices[dev] is the full indexing recipe for device `dev`
+    //   - shard_indices[dev][dim] is a Slice(start, end) for dimension `dim`
+    // e.g. shard_indices[0] = [Slice(0,8192), Slice(0,2048)] means device 0
+    // gets tensor[0:8192, 0:2048].
+    // Replicated devices share the same slices, so we cache the result of
+    // tensor.index() + contiguous() to avoid redundant copies.
+    // ----------------------------------------------------------------------
+    // Cache mapping: shard slices -> already-sliced tensor. When a device's
+    // indices match a previously seen shard (e.g. replicas), we reuse the
+    // cached tensor (just a refcount bump, no data copy) instead of
+    // re-slicing and calling contiguous() again.
+    
+    using shard_slice = std::vector<at::indexing::TensorIndex>;
+    std::vector<std::pair<shard_slice, at::Tensor>> shards_cache;
+    shards_cache.reserve(shard_indices.size());
+
     for (size_t i = 0; i < shard_indices.size(); i++) {
-      at::Tensor shard = tensor.index(
-          c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
-      shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
+      auto it = std::find_if(shards_cache.begin(), shards_cache.end(), [&](const auto& tensor_pair) { return VecTensorIndexEqual(tensor_pair.first, shard_indices[i]); });
+      if (it != shards_cache.end()) {
+        shards[i] = it->second;
+      } else {
+        at::Tensor shard = tensor.index(
+            c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
+        shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
+        shards_cache.emplace_back(shard_indices[i], shards[i]);
+      }
     }
     // Zero-pad to the right to ensure the sizes are even
     if (shards.size() > 0 && padded) {
