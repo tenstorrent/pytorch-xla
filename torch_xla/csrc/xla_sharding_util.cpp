@@ -438,6 +438,39 @@ ShardingUtil::GetShardReplicaAndIndicesForDevices(
   return shard_indices;
 }
 
+bool TensorIndexEqual(const at::indexing::TensorIndex& a, const at::indexing::TensorIndex& b) {
+  if (a.is_none() && b.is_none()) return true;
+  if (a.is_ellipsis() && b.is_ellipsis()) return true;
+
+  if (a.is_integer() && b.is_integer()) {
+      return a.integer() == b.integer();
+  }
+
+  if (a.is_boolean() && b.is_boolean()) {
+      return a.boolean() == b.boolean();
+  }
+
+  if (a.is_slice() && b.is_slice()) {
+      return a.slice().start() == b.slice().start() &&
+             a.slice().stop()  == b.slice().stop() &&
+             a.slice().step()  == b.slice().step();
+  }
+
+  if (a.is_tensor() && b.is_tensor()) {
+      return torch::equal(a.tensor(), b.tensor());
+  }
+
+  return false;
+}
+
+bool VecTensorIndexEqual(const std::vector<at::indexing::TensorIndex>& a, const std::vector<at::indexing::TensorIndex>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); i++) {
+    if (!TensorIndexEqual(a[i], b[i])) return false;
+  }
+  return true;
+}
+
 std::vector<at::Tensor> ShardingUtil::ShardTensor(
     const at::Tensor& tensor, const XLATensor::ShardingSpecPtr shardings,
     const std::vector<std::string>& devices, bool padded) {
@@ -471,11 +504,20 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
                      std::back_inserter(shard_indices),
                      [](auto& pair) { return pair.second; });
     }
+    using shard_slice = std::vector<at::indexing::TensorIndex>;
+    std::vector<std::pair<shard_slice, at::Tensor>> shards_cache; 
+    shards_cache.reserve(shard_indices.size());
 
     for (size_t i = 0; i < shard_indices.size(); i++) {
+      auto it = std::find_if(shards_cache.begin(), shards_cache.end(), [&](const auto& element) { return VecTensorIndexEqual(element.first, shard_indices[i]); });
+      if (it != shards_cache.end()) {
+        shards[i] = it->second;
+      } else {
       at::Tensor shard = tensor.index(
           c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
       shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
+      shards_cache.emplace_back(shard_indices[i], shards[i]);
+      }
     }
     // Zero-pad to the right to ensure the sizes are even
     if (shards.size() > 0 && padded) {
