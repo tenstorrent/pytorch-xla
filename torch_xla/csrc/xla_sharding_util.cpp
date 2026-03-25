@@ -504,19 +504,33 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
                      std::back_inserter(shard_indices),
                      [](auto& pair) { return pair.second; });
     }
+
+    // shard_indices is vector<vector<TensorIndex>>:
+    //   - shard_indices[dev] is the full indexing recipe for device `dev`
+    //   - shard_indices[dev][dim] is a Slice(start, end) for dimension `dim`
+    // e.g. shard_indices[0] = [Slice(0,8192), Slice(0,2048)] means device 0
+    // gets tensor[0:8192, 0:2048].
+    // Replicated devices share the same slices, so we cache the result of
+    // tensor.index() + contiguous() to avoid redundant copies.
+    // ----------------------------------------------------------------------
+    // Cache mapping: shard slices -> already-sliced tensor. When a device's
+    // indices match a previously seen shard (e.g. replicas), we reuse the
+    // cached tensor (just a refcount bump, no data copy) instead of
+    // re-slicing and calling contiguous() again.
+    
     using shard_slice = std::vector<at::indexing::TensorIndex>;
-    std::vector<std::pair<shard_slice, at::Tensor>> shards_cache; 
+    std::vector<std::pair<shard_slice, at::Tensor>> shards_cache;
     shards_cache.reserve(shard_indices.size());
 
     for (size_t i = 0; i < shard_indices.size(); i++) {
-      auto it = std::find_if(shards_cache.begin(), shards_cache.end(), [&](const auto& element) { return VecTensorIndexEqual(element.first, shard_indices[i]); });
+      auto it = std::find_if(shards_cache.begin(), shards_cache.end(), [&](const auto& tensor_pair) { return VecTensorIndexEqual(tensor_pair.first, shard_indices[i]); });
       if (it != shards_cache.end()) {
         shards[i] = it->second;
       } else {
-      at::Tensor shard = tensor.index(
-          c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
-      shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
-      shards_cache.emplace_back(shard_indices[i], shards[i]);
+        at::Tensor shard = tensor.index(
+            c10::ArrayRef<at::indexing::TensorIndex>(shard_indices[i]));
+        shards[i] = shard.contiguous(at::MemoryFormat::Contiguous);
+        shards_cache.emplace_back(shard_indices[i], shards[i]);
       }
     }
     // Zero-pad to the right to ensure the sizes are even
