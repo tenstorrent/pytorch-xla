@@ -280,7 +280,7 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
     int64_t source_id = tensor->source_id();
     if (source_id >= 0) {
       dims.push_back(source_id);
-      strides.push_back(0);
+      strides.push_back(-1);
     }
 
     std::shared_ptr<xla::PjRtBuffer> buffer =
