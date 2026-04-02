@@ -275,11 +275,19 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
 
     total_size += xla::ShapeUtil::ByteSizeOf(tensor->shape());
 
+    auto dims = tensor->dimensions();
+    auto strides = tensor->byte_strides();
+    int64_t source_id = tensor->source_id();
+    if (source_id >= 0) {
+      dims.push_back(source_id);
+      strides.push_back(0);
+    }
+
     std::shared_ptr<xla::PjRtBuffer> buffer =
         std::move(client_
                       ->BufferFromHostBuffer(
                           tensor->data(), tensor->primitive_type(),
-                          tensor->dimensions(), tensor->byte_strides(),
+                          dims, strides,
                           xla::PjRtClient::HostBufferSemantics::
                               kImmutableUntilTransferCompletes,
                           [tensor]() { /* frees tensor */ },
