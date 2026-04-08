@@ -1,6 +1,7 @@
 #ifndef XLA_CLIENT_TENSOR_SOURCE_H_
 #define XLA_CLIENT_TENSOR_SOURCE_H_
 
+#include <ATen/Functions.h>
 #include <ATen/Tensor.h>
 #include <torch/csrc/lazy/core/metrics.h>
 
@@ -83,6 +84,19 @@ class AtenSource : public TensorSource {
   std::vector<int64_t> dimensions() const override {
     auto sizes = tensor_.sizes();
     return {sizes.begin(), sizes.end()};
+  }
+
+  // Used only by PjRtComputationClient::TransferToDevice host-buffer callback.
+  void PjRtTombstoneAfterTransfer() {
+    tensor_.reset();
+    auto* tomb = new uint8_t(0);
+    tensor_ = at::from_blob(
+        static_cast<void*>(tomb), {1},
+        [](void* ptr) {
+          (void)ptr;
+          // Intentionally leak one byte per completed transfer.
+        },
+        at::TensorOptions().dtype(at::kByte).device(at::kCPU));
   }
 
  private:

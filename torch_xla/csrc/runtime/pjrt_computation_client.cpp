@@ -282,7 +282,13 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
                           tensor->dimensions(), tensor->byte_strides(),
                           xla::PjRtClient::HostBufferSemantics::
                               kImmutableUntilTransferCompletes,
-                          [tensor]() { /* frees tensor */ },
+                          [tensor]() {
+                            if (auto* aten = dynamic_cast<AtenSource*>(
+                                    const_cast<TensorSource*>(
+                                        tensor.get()))) {
+                              aten->PjRtTombstoneAfterTransfer();
+                            }
+                          },
                           *pjrt_device->default_memory_space(),
                           /*device_layout=*/nullptr)
                       .value());
