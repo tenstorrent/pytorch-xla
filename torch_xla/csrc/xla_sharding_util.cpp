@@ -685,12 +685,15 @@ runtime::ComputationClient::DataPtr ShardingUtil::CreateShardedData(
     global_shape = sharding_spec->shape;
     sharding = sharding_spec->sharding;
   }
+  int64_t source_id = runtime::NextSourceId();
   for (int64_t j = 0; j < devices.size(); ++j) {
     auto shard_device = ParseDeviceString(devices[j]);
     auto shard_shape =
         CreateComputationShapeFromTensor(local_shards[j], &shard_device);
-    source_tensors.push_back(std::make_shared<runtime::AtenSource>(
-        local_shards[j], shard_shape, devices[j]));
+    auto source = std::make_shared<runtime::AtenSource>(
+        local_shards[j], shard_shape, devices[j]);
+    source->set_source_id(source_id);
+    source_tensors.push_back(source);
   }
   return runtime::GetComputationClientOrDie()->TransferShardsToDevice(
       source_tensors, GetVirtualDevice().toString(), global_shape, sharding);

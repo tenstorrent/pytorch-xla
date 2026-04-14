@@ -4,6 +4,7 @@
 #include <ATen/Tensor.h>
 #include <torch/csrc/lazy/core/metrics.h>
 
+#include <atomic>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,11 @@
 namespace torch_xla {
 namespace runtime {
 
+inline int64_t NextSourceId() {
+  static std::atomic<int64_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Owns a contiguous block of data with the shape and layout matching `shape()`.
 class TensorSource {
  public:
@@ -28,6 +34,11 @@ class TensorSource {
   virtual const xla::Shape& shape() const = 0;
 
   const std::string& device() const { return device_; }
+
+  // Identifies the logical tensor this shard originated from. All shards
+  // produced from the same source tensor share the same source_id.
+  int64_t source_id() const { return source_id_; }
+  void set_source_id(int64_t id) { source_id_ = id; }
 
   virtual std::vector<int64_t> byte_strides() const {
     std::vector<int64_t> byte_strides(shape().dimensions_size());
@@ -47,6 +58,7 @@ class TensorSource {
 
  private:
   std::string device_;
+  int64_t source_id_ = -1;
 };
 
 class AtenSource : public TensorSource {
