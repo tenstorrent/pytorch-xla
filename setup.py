@@ -118,9 +118,9 @@ USE_NIGHTLY = False  # Whether to use nightly or stable libtpu and JAX.
 _libtpu_version = '0.0.18'
 _libtpu_date = '20250617'
 
-_jax_version = '0.7.1'
-_jaxlib_version = '0.7.1'
-_jax_date = '20250617'  # Date for jax and jaxlib.
+_jax_version = '0.9.2'
+_jaxlib_version = '0.9.2'
+_jax_date = '20260415'  # Date for jax and jaxlib.
 
 if USE_NIGHTLY:
   _libtpu_version += f".dev{_libtpu_date}"
