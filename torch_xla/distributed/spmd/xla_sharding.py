@@ -678,8 +678,11 @@ def annotate_custom_sharding(t: Union[torch.Tensor,
   return wrap_as_sharded_tensor(t)
 
 
-def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
-                  partition_spec: PartitionSpec) -> XLAShardedTensor:
+def mark_sharding(
+    t: Union[torch.Tensor, XLAShardedTensor],
+    mesh: Mesh,
+    partition_spec: PartitionSpec,
+    priority: Optional[tuple[Optional[int], ...]] = None) -> XLAShardedTensor:
   """
     Annotates the tensor provided with XLA partition spec. Internally,
     it annotates the corresponding XLATensor as sharded for the XLA SpmdPartitioner pass.
@@ -702,6 +705,17 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
             mesh axes in the tuple. Note that the order the mesh axes are specified in the tuple
             will impact the resulting sharding.
 
+        priority (Optional[tuple[Optional[int], ...]]): A tuple of priority values for each dimension.
+            Lower values have higher priority during Shardy propagation.
+            - 0: highest priority (propagated first)
+            - 1, 2, ...: lower priority (propagated later)
+            - None or -1: no priority set (resolved by aggressive propagation after
+              all prioritized shardings are applied)
+
+            When there's a sharding conflict (e.g., same axis used on different tensors),
+            the sharding with higher priority (lower number) will be applied first.
+            Dimensions without priority (None/-1) are resolved by shardy propagation after all prioritized ones.
+
     Example:
 
       >>> import torch_xla.runtime as xr
@@ -714,6 +728,9 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
       >>> xs.mark_sharding(input, mesh, (0, None)) # 4-way data parallel
       >>> linear = nn.Linear(32, 10).to('xla')
       >>> xs.mark_sharding(linear.weight, mesh, (None, 1)) # 2-way model parallel
+      >>> # With priority: input sharding propagates before weight sharding
+      >>> xs.mark_sharding(input, mesh, ('x', None), priority=(0, None))
+      >>> xs.mark_sharding(linear.weight, mesh, (None, 'x'), priority=(None, 1))
   """
   # We only allow fully specified `partition_spec` to be applicable, as opposed
   # to filling in the unspecified replicated dims. Fully specified `partition_spec`
@@ -721,6 +738,10 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
   # where the group assignment may vary with different input ranks.
   assert len(t.shape) == len(partition_spec), \
     f"Partition spec length ({len(partition_spec)}) should be equal to the input rank ({len(t.shape)})."
+
+  if priority is not None:
+    assert len(t.shape) == len(priority), \
+      f"Priority length ({len(priority)}) should be equal to the input rank ({len(t.shape)})."
 
   tx = maybe_get_torchax()
   if tx is not None and isinstance(t, tx.tensor.Tensor):
@@ -733,8 +754,17 @@ def mark_sharding(t: Union[torch.Tensor, XLAShardedTensor], mesh: Mesh,
     op_sharding = mesh.get_op_sharding_v2(partition_spec)
   else:
     op_sharding = mesh.get_op_sharding(partition_spec)
+
+  # Convert priority to list for C++ binding (None -> -1 as sentinel)
+  priority_list = None
+  if priority is not None:
+    priority_list = [p if p is not None else -1 for p in priority]
+
   annotate_func = torch_xla._XLAC._xla_mark_sharding
-  annotate_func(unwrap_sharded_tensor(t), op_sharding)
+  if priority_list is not None:
+    annotate_func(unwrap_sharded_tensor(t), op_sharding, priority_list)
+  else:
+    annotate_func(unwrap_sharded_tensor(t), op_sharding)
   return wrap_as_sharded_tensor(t)
 
 

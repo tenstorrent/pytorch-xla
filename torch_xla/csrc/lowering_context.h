@@ -51,7 +51,8 @@ class LoweringContext : public torch::lazy::LoweringContext {
   // held in data.
   xla::XlaOp GetParameter(
       const std::shared_ptr<torch::lazy::BackendData>& backend_data,
-      const std::unordered_set<uint32_t>& dynamic_dims = {});
+      const std::unordered_set<uint32_t>& dynamic_dims = {},
+      const std::vector<int64_t>& priority = {});
 
   // If a parameter associated with data has already been declared, returns its
   // ID. Otherwise, returns `std::nullopt`.

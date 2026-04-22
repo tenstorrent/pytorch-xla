@@ -142,8 +142,22 @@ class XlaNode : public torch::lazy::Node {
 
   void SetSharding(const xla::OpSharding& sharding, size_t index);
 
+  // Set sharding with priority for Shardy propagation
+  void SetSharding(const xla::OpSharding& sharding, size_t index,
+                   const std::vector<int64_t>& priority);
+
+  // Get priority for Shardy propagation
+  const std::vector<int64_t>* GetPriority(size_t index) const {
+    if (index >= output_priorities_.size() ||
+        output_priorities_[index].empty()) {
+      return nullptr;
+    }
+    return &output_priorities_[index];
+  }
+
   void ClearSharding() {
     output_shardings_.clear();
+    output_priorities_.clear();
     sharding_hash_ = 0;
   }
 
@@ -181,6 +195,8 @@ class XlaNode : public torch::lazy::Node {
 
   // Experimental sharding annotations attached to the IR node.
   std::vector<std::shared_ptr<xla::OpSharding>> output_shardings_;
+  // Priority for Shardy propagation (lower = higher priority, -1 = default)
+  std::vector<std::vector<int64_t>> output_priorities_;
 };
 
 inline std::ostream& operator<<(std::ostream& stream, const XlaNode& node) {
