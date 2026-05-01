@@ -343,7 +343,7 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
       args.extension_start = nullptr;
       args.client = c_api_client->pjrt_c_client();
       args.data = tensor->data();
-      args.type = static_cast<PJRT_Buffer_Type>(tensor->primitive_type());
+      args.type = pjrt::ConvertToPjRtBufferType(tensor->primitive_type());
       auto dims = tensor->dimensions();
       args.dims = dims.data();
       args.num_dims = dims.size();
