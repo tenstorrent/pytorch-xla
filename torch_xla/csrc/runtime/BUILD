@@ -403,10 +403,20 @@ cc_library(
 )
 
 cc_library(
+    name = "pjrt_buffer_metadata_extension",
+    hdrs = ["pjrt_buffer_metadata_extension.h"],
+    deps = [
+        "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
+    ],
+)
+
+cc_library(
     name = "tensor_source",
     hdrs = ["tensor_source.h"],
     deps = [
         ":debug_macros",
+        ":pjrt_buffer_metadata_extension",
+        "//torch_xla/csrc:dtype",
         "//torch_xla/csrc:status",
         "@torch//:headers",
         "@xla//xla:literal",
@@ -497,6 +507,7 @@ ptxla_cc_test(
     srcs = ["pjrt_computation_client_test.cpp"],
     deps = [
         ":computation_client",
+        ":pjrt_buffer_metadata_extension",
         ":pjrt_computation_client",
         ":operation_manager",
         ":tensor_source",
