@@ -10,6 +10,7 @@
 
 #include "torch_xla/csrc/dtype.h"
 #include "torch_xla/csrc/runtime/debug_macros.h"
+#include "torch_xla/csrc/runtime/pjrt_buffer_metadata_extension.h"
 #include "torch_xla/csrc/status.h"
 #include "xla/literal.h"
 #include "xla/shape.h"
@@ -45,14 +46,21 @@ class TensorSource {
     return shape().element_type();
   }
 
+  // Optional metadata associated with this tensor source.
+  // Returns nullptr by default; subclasses can override to provide metadata.
+  virtual const PJRT_BufferMetadata* metadata() const { return nullptr; }
+
  private:
   std::string device_;
 };
 
 class AtenSource : public TensorSource {
  public:
-  AtenSource(const at::Tensor& tensor, xla::Shape shape, std::string device)
-      : TensorSource(std::move(device)), shape_(std::move(shape)) {
+  AtenSource(const at::Tensor& tensor, xla::Shape shape, std::string device,
+             const PJRT_BufferMetadata* metadata = nullptr)
+      : TensorSource(std::move(device)),
+        shape_(std::move(shape)),
+        metadata_(metadata) {
     at::ScalarType target_torch_type = TorchTypeFromXlaType(primitive_type());
     if (target_torch_type != tensor.type().scalarType()) {
       TORCH_LAZY_COUNTER("AtenSourceDowncasts", 1);
@@ -85,9 +93,12 @@ class AtenSource : public TensorSource {
     return {sizes.begin(), sizes.end()};
   }
 
+  const PJRT_BufferMetadata* metadata() const override { return metadata_; }
+
  private:
   at::Tensor tensor_;
   xla::Shape shape_;
+  const PJRT_BufferMetadata* metadata_;
 };
 
 class LiteralSource : public TensorSource {
