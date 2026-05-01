@@ -663,7 +663,8 @@ void ShardingUtil::PrepareOutputShardingPropagation(
 runtime::ComputationClient::DataPtr ShardingUtil::CreateShardedData(
     const std::vector<at::Tensor>& local_shards,
     const std::vector<std::string>& devices,
-    const XLATensor::ShardingSpecPtr& sharding_spec) {
+    const XLATensor::ShardingSpecPtr& sharding_spec,
+    const PJRT_BufferMetadata* metadata) {
   XLA_CHECK(local_shards.size() == devices.size())
       << "A device must be speficied for each shard";
   std::vector<std::shared_ptr<const runtime::TensorSource>> source_tensors;
@@ -685,12 +686,14 @@ runtime::ComputationClient::DataPtr ShardingUtil::CreateShardedData(
     global_shape = sharding_spec->shape;
     sharding = sharding_spec->sharding;
   }
+  // All shards get the same metadata - they belong to the same logical tensor.
+  // The PJRT plugin can identify which shard is which from the device.
   for (int64_t j = 0; j < devices.size(); ++j) {
     auto shard_device = ParseDeviceString(devices[j]);
     auto shard_shape =
         CreateComputationShapeFromTensor(local_shards[j], &shard_device);
     source_tensors.push_back(std::make_shared<runtime::AtenSource>(
-        local_shards[j], shard_shape, devices[j]));
+        local_shards[j], shard_shape, devices[j], metadata));
   }
   return runtime::GetComputationClientOrDie()->TransferShardsToDevice(
       source_tensors, GetVirtualDevice().toString(), global_shape, sharding);

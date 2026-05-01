@@ -121,10 +121,14 @@ class ShardingUtil {
 
   // Transfers the individual shards to the devices and returns a DataPtr for
   // the PjRtShardedData wrapping the shards.
+  // If `metadata` is provided, it will be associated with all shards during
+  // transfer. This allows PJRT plugins to identify that all shards belong to
+  // the same logical tensor.
   static runtime::ComputationClient::DataPtr CreateShardedData(
       const std::vector<at::Tensor>& shards,
       const std::vector<std::string>& devices,
-      const XLATensor::ShardingSpecPtr& sharding_spec);
+      const XLATensor::ShardingSpecPtr& sharding_spec,
+      const PJRT_BufferMetadata* metadata = nullptr);
 
   static void XlaMarkSharding(const at::Tensor& input,
                               xla::OpSharding sharding);
