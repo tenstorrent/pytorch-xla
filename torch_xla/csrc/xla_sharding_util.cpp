@@ -2,9 +2,11 @@
 
 #include <ATen/TensorIndexing.h>
 
+#include <atomic>
 #include <cmath>
 #include <unordered_map>
 
+#include "absl/strings/str_format.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "torch/csrc/lazy/core/ir_util.h"
 #include "torch_xla/csrc/aten_autograd_ops.h"
@@ -37,6 +39,9 @@ namespace torch_xla {
 namespace {
 
 using xla::internal::XlaBuilderFriend;
+
+// Counter for generating unique logical tensor IDs in test metadata.
+static std::atomic<int64_t> g_logical_tensor_id_counter{0};
 
 static bool use_auto_sharding = false;
 
@@ -686,6 +691,67 @@ runtime::ComputationClient::DataPtr ShardingUtil::CreateShardedData(
     global_shape = sharding_spec->shape;
     sharding = sharding_spec->sharding;
   }
+
+  // Generate test metadata if none provided.
+  // TODO(jzx): This is temporary for testing. In production, metadata should
+  // be passed from Python layer with actual tensor names from safetensors.
+  // NOTE: This allocates memory that intentionally leaks - acceptable for
+  // testing but needs proper lifetime management for production use.
+  const PJRT_BufferMetadata* effective_metadata = metadata;
+  PJRT_BufferMetadata* test_metadata = nullptr;
+  PJRT_BufferMetadata_Entry* test_entries = nullptr;
+  std::string* debug_string = nullptr;
+
+  if (effective_metadata == nullptr && !local_shards.empty()) {
+    // Generate unique logical tensor ID
+    int64_t logical_id = g_logical_tensor_id_counter.fetch_add(1);
+
+    // Build debug string with shape info
+    const auto& first_shard = local_shards[0];
+    debug_string = new std::string(absl::StrFormat(
+        "test_tensor_%d_shape_%s_dtype_%s_shards_%d",
+        logical_id,
+        first_shard.sizes().vec().empty()
+            ? "scalar"
+            : absl::StrFormat("%dx%s",
+                              first_shard.sizes()[0],
+                              first_shard.sizes().size() > 1
+                                  ? std::to_string(first_shard.sizes()[1])
+                                  : ""),
+        toString(first_shard.scalar_type()),
+        local_shards.size()));
+
+    // Allocate entries: [0] = logical_id (int), [1] = debug_info (string)
+    test_entries = new PJRT_BufferMetadata_Entry[2];
+
+    // Entry 0: logical_id as integer
+    test_entries[0].struct_size = sizeof(PJRT_BufferMetadata_Entry);
+    test_entries[0].key = "logical_id";
+    test_entries[0].key_size = strlen("logical_id");
+    test_entries[0].value = nullptr;  // Use int_value
+    test_entries[0].value_size = 0;
+    test_entries[0].int_value = logical_id;
+
+    // Entry 1: debug_info as string
+    test_entries[1].struct_size = sizeof(PJRT_BufferMetadata_Entry);
+    test_entries[1].key = "debug_info";
+    test_entries[1].key_size = strlen("debug_info");
+    test_entries[1].value = debug_string->c_str();
+    test_entries[1].value_size = debug_string->size();
+    test_entries[1].int_value = 0;
+
+    // Build metadata struct
+    test_metadata = new PJRT_BufferMetadata;
+    test_metadata->struct_size = sizeof(PJRT_BufferMetadata);
+    test_metadata->entries = test_entries;
+    test_metadata->num_entries = 2;
+
+    effective_metadata = test_metadata;
+
+    TF_VLOG(3) << "CreateShardedData: Generated test metadata with logical_id="
+               << logical_id << ", debug_info=" << *debug_string;
+  }
+
   // All shards get the same metadata - they belong to the same logical tensor.
   // The PJRT plugin can identify which shard is which from the device.
   for (int64_t j = 0; j < devices.size(); ++j) {
@@ -693,7 +759,7 @@ runtime::ComputationClient::DataPtr ShardingUtil::CreateShardedData(
     auto shard_shape =
         CreateComputationShapeFromTensor(local_shards[j], &shard_device);
     source_tensors.push_back(std::make_shared<runtime::AtenSource>(
-        local_shards[j], shard_shape, devices[j], metadata));
+        local_shards[j], shard_shape, devices[j], effective_metadata));
   }
   return runtime::GetComputationClientOrDie()->TransferShardsToDevice(
       source_tensors, GetVirtualDevice().toString(), global_shape, sharding);
