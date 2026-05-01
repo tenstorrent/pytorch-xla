@@ -366,14 +366,26 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
       buffer = std::make_shared<xla::PjRtCApiBuffer>(c_api_client, args.buffer);
 
       // Handle done_with_host_buffer event if provided.
+      // This mirrors PjRtCApiClient::BufferFromHostBuffer - we register a
+      // callback that keeps the tensor alive until the transfer completes.
       if (args.done_with_host_buffer != nullptr) {
-        // Destroy the event - we rely on the buffer destructor to ensure
-        // proper synchronization.
-        PJRT_Event_Destroy_Args destroy_args;
-        destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;
-        destroy_args.extension_start = nullptr;
-        destroy_args.event = args.done_with_host_buffer;
-        pjrt_c_api->PJRT_Event_Destroy(&destroy_args);
+        // Register callback - captures tensor to keep it alive until transfer
+        // completes. The event is automatically destroyed after callback runs.
+        std::unique_ptr<PJRT_Event, pjrt::PJRT_EventDeleter> event(
+            args.done_with_host_buffer, pjrt::MakeEventDeleter(pjrt_c_api));
+
+        PJRT_Error* event_error = pjrt::InvokePjRtEventWhenReady(
+            pjrt_c_api, event.release(),
+            [tensor]() { /* tensor destructor runs when transfer completes */ });
+
+        if (event_error != nullptr) {
+          auto status = pjrt::PjrtErrorToStatus(event_error, pjrt_c_api);
+          pjrt_c_api->PJRT_Error_Destroy(
+              PJRT_Error_Destroy_Args{sizeof(PJRT_Error_Destroy_Args), nullptr,
+                                      event_error});
+          TF_VLOG(1) << "Event callback registration failed: "
+                     << status.message();
+        }
       }
     } else {
       // Standard path: use PjRtClient::BufferFromHostBuffer.
