@@ -1,7 +1,9 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
+#include <ATen/ATen.h>
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -9,6 +11,7 @@
 #include <vector>
 
 #include "torch_xla/csrc/runtime/computation_client.h"
+#include "torch_xla/csrc/runtime/pjrt_buffer_metadata_extension.h"
 #include "torch_xla/csrc/runtime/tensor_source.h"
 #include "torch_xla/csrc/status.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -125,6 +128,62 @@ TEST_F(PjRtComputationClientTest, Init) {
   EXPECT_TRUE(xla::LiteralTestUtil::Equal(
       xla::LiteralUtil::CreateR2<float>({{6.0f, 8.0f}, {10.0f, 12.0f}}),
       result_literals[0]));
+}
+
+// Test that TransferToDevice works correctly without metadata.
+// The CPU PJRT client doesn't have the buffer metadata extension,
+// so this verifies the fallback path works.
+TEST_F(PjRtComputationClientTest, TransferToDeviceWithoutMetadata) {
+  // Create a simple tensor source without metadata.
+  xla::Literal literal =
+      xla::LiteralUtil::CreateR2<float>({{1.0f, 2.0f}, {3.0f, 4.0f}});
+
+  std::vector<std::shared_ptr<const TensorSource>> sources = {
+      std::make_shared<LiteralSource>(std::move(literal), device_)};
+
+  // Transfer should succeed using the standard path.
+  std::vector<ComputationClient::DataPtr> data =
+      client_->TransferToDevice(absl::MakeConstSpan(sources));
+
+  ASSERT_EQ(data.size(), 1);
+  EXPECT_TRUE(data[0]->HasValue());
+}
+
+// Test that AtenSource correctly stores and returns metadata.
+TEST_F(PjRtComputationClientTest, AtenSourceMetadata) {
+  at::Tensor tensor = at::ones({2, 2}, at::kFloat);
+  xla::Shape shape = xla::ShapeUtil::MakeShape(xla::F32, {2, 2});
+
+  // AtenSource without metadata should return nullptr.
+  AtenSource source_no_metadata(tensor, shape, device_);
+  EXPECT_EQ(source_no_metadata.metadata(), nullptr);
+
+  // Create some test metadata.
+  PJRT_BufferMetadata_Entry entry;
+  entry.struct_size = sizeof(PJRT_BufferMetadata_Entry);
+  entry.key = "cache_key";
+  entry.key_size = strlen("cache_key");
+  entry.value = "test_tensor";
+  entry.value_size = strlen("test_tensor");
+  entry.int_value = 0;
+
+  PJRT_BufferMetadata metadata;
+  metadata.struct_size = sizeof(PJRT_BufferMetadata);
+  metadata.entries = &entry;
+  metadata.num_entries = 1;
+
+  // AtenSource with metadata should return the metadata.
+  AtenSource source_with_metadata(tensor, shape, device_, &metadata);
+  EXPECT_EQ(source_with_metadata.metadata(), &metadata);
+}
+
+// Test that TensorSource base class metadata() returns nullptr by default.
+TEST_F(PjRtComputationClientTest, TensorSourceMetadataDefault) {
+  xla::Literal literal = xla::LiteralUtil::CreateR2<float>({{1.0f}});
+  LiteralSource source(std::move(literal), device_);
+
+  // LiteralSource inherits default metadata() which returns nullptr.
+  EXPECT_EQ(source.metadata(), nullptr);
 }
 
 }  // namespace runtime
