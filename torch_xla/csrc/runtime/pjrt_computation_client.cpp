@@ -1,7 +1,10 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "absl/strings/ascii.h"
@@ -36,6 +39,24 @@ namespace torch_xla {
 namespace runtime {
 
 using xla::internal::XlaBuilderFriend;
+
+// Eager host-buffer release toggle for PjRtComputationClient::TransferToDevice.
+// See pjrt_computation_client.h for the full rationale. Initialized from
+// the XLA_RELEASE_HOST_BUFFER_EAGERLY env var (=1 to enable) on first use
+// and mutable thereafter via SetReleaseHostBufferEagerly().
+namespace {
+std::atomic<bool> g_release_host_buffer_eagerly{[]() {
+  const char* v = std::getenv("XLA_RELEASE_HOST_BUFFER_EAGERLY");
+  return v != nullptr && std::string(v) == "1";
+}()};
+}  // namespace
+
+void SetReleaseHostBufferEagerly(bool enabled) {
+  g_release_host_buffer_eagerly.store(enabled, std::memory_order_relaxed);
+}
+bool GetReleaseHostBufferEagerly() {
+  return g_release_host_buffer_eagerly.load(std::memory_order_relaxed);
+}
 
 namespace {
 
@@ -275,17 +296,51 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
 
     total_size += xla::ShapeUtil::ByteSizeOf(tensor->shape());
 
-    std::shared_ptr<xla::PjRtBuffer> buffer =
-        std::move(client_
-                      ->BufferFromHostBuffer(
-                          tensor->data(), tensor->primitive_type(),
-                          tensor->dimensions(), tensor->byte_strides(),
-                          xla::PjRtClient::HostBufferSemantics::
-                              kImmutableUntilTransferCompletes,
-                          [tensor]() { /* frees tensor */ },
-                          *pjrt_device->default_memory_space(),
-                          /*device_layout=*/nullptr)
-                      .value());
+    // Opt-in eager host-buffer release. Default semantics
+    // (kImmutableUntilTransferCompletes) keep the source CPU at::Tensor
+    // alive via the on-done callback for the lifetime of the device
+    // buffer, which is fine for normal `tensor.to(device)` flows but
+    // makes streaming-load patterns retain ~13 GB / block in host RAM
+    // even after the device shard is resident.
+    //
+    // Toggle at runtime via either:
+    //   - env var `XLA_RELEASE_HOST_BUFFER_EAGERLY=1` at process start, or
+    //   - Python  `torch_xla._XLAC._xla_set_release_host_buffer_eagerly(True)`
+    //     (overrides the env var, can be flipped per-process).
+    //
+    // When ON, BufferFromHostBuffer uses kImmutableOnlyDuringCall, which
+    // forces PJRT to copy the host buffer during the call so the source
+    // can be freed immediately after BufferFromHostBuffer returns.
+    // Required by tt-xla's streaming inference path; see tt-xla
+    // streaming/OPEN_QUESTIONS.md blocker #11 for the investigation.
+    const bool eager_release_host = GetReleaseHostBufferEagerly();
+
+    std::shared_ptr<xla::PjRtBuffer> buffer;
+    if (eager_release_host) {
+      buffer = std::move(
+          client_
+              ->BufferFromHostBuffer(
+                  tensor->data(), tensor->primitive_type(),
+                  tensor->dimensions(), tensor->byte_strides(),
+                  xla::PjRtClient::HostBufferSemantics::
+                      kImmutableOnlyDuringCall,
+                  /*on_done_with_host_buffer=*/nullptr,
+                  *pjrt_device->default_memory_space(),
+                  /*device_layout=*/nullptr)
+              .value());
+    } else {
+      buffer = std::move(
+          client_
+              ->BufferFromHostBuffer(
+                  tensor->data(), tensor->primitive_type(),
+                  tensor->dimensions(), tensor->byte_strides(),
+                  xla::PjRtClient::HostBufferSemantics::
+                      kImmutableUntilTransferCompletes,
+                  [tensor]() { /* frees tensor */ },
+                  *pjrt_device->default_memory_space(),
+                  /*device_layout=*/nullptr)
+              .value());
+    }
 
     ComputationClient::DataPtr data =
         std::make_shared<PjRtData>(tensor->device(), tensor->shape(), buffer);

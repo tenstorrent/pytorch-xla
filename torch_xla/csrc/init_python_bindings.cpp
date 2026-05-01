@@ -1561,6 +1561,20 @@ void InitXlaModuleBindings(py::module m) {
            []() {
             return XLAGraphExecutor::Get()->IsComputationCacheInitialized();
            })
+      .def("_xla_set_release_host_buffer_eagerly",
+           [](bool enabled) {
+            runtime::SetReleaseHostBufferEagerly(enabled);
+           },
+           "Toggle eager source-tensor release in "
+           "PjRtComputationClient::TransferToDevice. When true, "
+           "BufferFromHostBuffer copies the host buffer during the call "
+           "(kImmutableOnlyDuringCall) so the source can be freed "
+           "immediately. When false (default), the source is held alive "
+           "until transfer completes (kImmutableUntilTransferCompletes). "
+           "Streaming-load workflows want this on; default off avoids the "
+           "mandatory staging copy for general workloads.")
+      .def("_xla_get_release_host_buffer_eagerly",
+           []() { return runtime::GetReleaseHostBufferEagerly(); })
       .def("_xla_computation_cache_clear",
             []() {
               WaitDeviceOps();// wait for any inflight computations which may hold references to cached computations

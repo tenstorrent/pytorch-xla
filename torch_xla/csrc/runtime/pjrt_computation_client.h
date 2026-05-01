@@ -352,6 +352,22 @@ class PjRtComputationClient : public ComputationClient {
   std::shared_ptr<PjRtData> ReplicateShardedData(const DataPtr& handle);
 };
 
+// Eager host-buffer release toggle for PjRtComputationClient::TransferToDevice.
+// When ON, BufferFromHostBuffer uses kImmutableOnlyDuringCall semantics
+// (PJRT copies the source CPU buffer during the call) so callers can free
+// the source tensor immediately. When OFF (default),
+// kImmutableUntilTransferCompletes is used (potentially zero-copy, source
+// kept alive via on_done callback for the device buffer's lifetime).
+//
+// Streaming-load workflows want this ON to bound host RAM. Default OFF so
+// general workloads aren't penalized by the mandatory staging copy.
+//
+// Initialized from the XLA_RELEASE_HOST_BUFFER_EAGERLY env var (=1 to
+// enable) at startup, then mutable via the Python API
+// (torch_xla._XLAC._xla_set_release_host_buffer_eagerly(bool)).
+void SetReleaseHostBufferEagerly(bool enabled);
+bool GetReleaseHostBufferEagerly();
+
 }  // namespace runtime
 }  // namespace torch_xla
 #endif  // XLA_CLIENT_PJRT_COMPUTATION_CLIENT_H_

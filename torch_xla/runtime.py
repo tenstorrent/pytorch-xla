@@ -54,6 +54,38 @@ def set_device_type(pjrt_device: str) -> None:
   os.environ[xenv.PJRT_DEVICE] = pjrt_device
 
 
+def set_release_host_buffer_eagerly(enabled: bool) -> None:
+  """Toggle eager source-tensor release in TransferToDevice.
+
+  When True, ``BufferFromHostBuffer`` is called with
+  ``kImmutableOnlyDuringCall`` semantics: PJRT copies the host buffer
+  during the call so callers can free the source ``at::Tensor``
+  immediately after the upload returns.
+
+  When False (default), the source tensor is held alive via the
+  on-done callback until the device buffer is destroyed
+  (``kImmutableUntilTransferCompletes``). That's better for
+  zero-copy / latency-sensitive workloads but pins ~tensor-bytes of
+  host RAM per upload — which makes layer-streaming inference
+  patterns (e.g. tt-xla's ``streaming/``) blow past their host-RAM
+  budget.
+
+  Equivalent to setting ``XLA_RELEASE_HOST_BUFFER_EAGERLY=1`` at
+  process start, but selectable from Python so callers don't have to
+  manage env vars. Calls override the env-var default.
+
+  Args:
+    enabled: True to switch to ``kImmutableOnlyDuringCall``, False to
+      use the default ``kImmutableUntilTransferCompletes``.
+  """
+  torch_xla._XLAC._xla_set_release_host_buffer_eagerly(bool(enabled))
+
+
+def get_release_host_buffer_eagerly() -> bool:
+  """Returns the current state of the eager host-buffer-release toggle."""
+  return torch_xla._XLAC._xla_get_release_host_buffer_eagerly()
+
+
 def _maybe_select_default_device():
   if xu.getenv_as(xenv.PJRT_SELECT_DEFAULT_DEVICE, str,
                   '1') == '0' or xenv.PJRT_DEVICE in os.environ:
