@@ -11,12 +11,14 @@
 #include "torch_xla/csrc/runtime/computation_client.h"
 #include "torch_xla/csrc/runtime/debug_macros.h"
 #include "torch_xla/csrc/runtime/operation_manager.h"
+#include "torch_xla/csrc/runtime/pjrt_buffer_metadata_extension.h"
 #include "torch_xla/csrc/runtime/util.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/threadpool.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/literal.h"
 #include "xla/pjrt/pjrt_api.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
@@ -208,6 +210,14 @@ class PjRtComputationClient : public ComputationClient {
   // only for testing.
   std::function<absl::Status()> fake_xla_compile_ = nullptr;
   std::unordered_map<std::string, std::string> custom_compile_options_;
+
+  // Cached pointer to the buffer metadata extension, if the PJRT plugin
+  // supports it. Set during Initialize().
+  const PJRT_BufferMetadata_Extension* buffer_metadata_extension_ = nullptr;
+
+  // Finds the buffer metadata extension in the PJRT plugin's extension list.
+  // Returns nullptr if not found.
+  const PJRT_BufferMetadata_Extension* FindBufferMetadataExtension();
 
   xla::PjRtDevice* StringToPjRtDevice(const std::string& device);
 

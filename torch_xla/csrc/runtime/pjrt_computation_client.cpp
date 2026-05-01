@@ -24,7 +24,9 @@
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/literal.h"
 #include "xla/pjrt/c/pjrt_c_api_gpu_extension.h"
+#include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
+#include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -141,7 +143,37 @@ absl::Status PjRtComputationClient::Initialize() {
   tracked_devices.emplace_back(spmd_device_str);
   operation_manager_ = std::move(OperationManager(std::move(tracked_devices)));
 
+  // Try to find the buffer metadata extension from the PJRT plugin.
+  buffer_metadata_extension_ = FindBufferMetadataExtension();
+
   return absl::OkStatus();
+}
+
+const PJRT_BufferMetadata_Extension*
+PjRtComputationClient::FindBufferMetadataExtension() {
+  auto* c_api_client = dynamic_cast<xla::PjRtCApiClient*>(client_.get());
+  if (!c_api_client) {
+    // Not a C API client, extension mechanism not available.
+    return nullptr;
+  }
+
+  const PJRT_Api* pjrt_api = c_api_client->pjrt_c_api();
+  if (!pjrt_api || !pjrt_api->extension_start) {
+    return nullptr;
+  }
+
+  const PJRT_Extension_Base* next =
+      reinterpret_cast<const PJRT_Extension_Base*>(pjrt_api->extension_start);
+  while (next != nullptr) {
+    if (next->type == PJRT_Extension_Type_BufferMetadata) {
+      TF_VLOG(3) << "Found PJRT BufferMetadata extension";
+      return reinterpret_cast<const PJRT_BufferMetadata_Extension*>(next);
+    }
+    next = next->next;
+  }
+
+  TF_VLOG(3) << "PJRT BufferMetadata extension not found";
+  return nullptr;
 }
 
 absl::StatusOr<absl_nonnull std::unique_ptr<PjRtComputationClient>>
@@ -270,22 +302,93 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
   std::vector<ComputationClient::DataPtr> datas;
   datas.reserve(tensors.size());
   int64_t total_size = 0;
+
+  // Get C API client if extension is available (needed for metadata path).
+  xla::PjRtCApiClient* c_api_client = nullptr;
+  const PJRT_Api* pjrt_c_api = nullptr;
+  if (buffer_metadata_extension_ != nullptr) {
+    c_api_client = dynamic_cast<xla::PjRtCApiClient*>(client_.get());
+    if (c_api_client != nullptr) {
+      pjrt_c_api = c_api_client->pjrt_c_api();
+    }
+  }
+
   for (auto& tensor : tensors) {
     xla::PjRtDevice* pjrt_device = StringToPjRtDevice(tensor->device());
-
     total_size += xla::ShapeUtil::ByteSizeOf(tensor->shape());
 
-    std::shared_ptr<xla::PjRtBuffer> buffer =
-        std::move(client_
-                      ->BufferFromHostBuffer(
-                          tensor->data(), tensor->primitive_type(),
-                          tensor->dimensions(), tensor->byte_strides(),
-                          xla::PjRtClient::HostBufferSemantics::
-                              kImmutableUntilTransferCompletes,
-                          [tensor]() { /* frees tensor */ },
-                          *pjrt_device->default_memory_space(),
-                          /*device_layout=*/nullptr)
-                      .value());
+    std::shared_ptr<xla::PjRtBuffer> buffer;
+
+    // Use metadata extension if available and tensor has metadata.
+    if (buffer_metadata_extension_ != nullptr && c_api_client != nullptr &&
+        pjrt_c_api != nullptr && tensor->metadata() != nullptr) {
+      // Get the underlying C API device.
+      auto* c_api_device = dynamic_cast<xla::PjRtCApiDevice*>(pjrt_device);
+      XLA_CHECK(c_api_device != nullptr)
+          << "Expected PjRtCApiDevice for metadata extension";
+
+      // Build args struct for the extension API.
+      PJRT_Client_BufferFromHostBufferWithMetadata_Args args;
+      args.struct_size =
+          PJRT_Client_BufferFromHostBufferWithMetadata_Args_STRUCT_SIZE;
+      args.extension_start = nullptr;
+      args.client = c_api_client->pjrt_c_client();
+      args.data = tensor->data();
+      args.type = static_cast<PJRT_Buffer_Type>(tensor->primitive_type());
+      auto dims = tensor->dimensions();
+      args.dims = dims.data();
+      args.num_dims = dims.size();
+      auto byte_strides = tensor->byte_strides();
+      args.byte_strides = byte_strides.data();
+      args.num_byte_strides = byte_strides.size();
+      args.host_buffer_semantics =
+          PJRT_HostBufferSemantics_kImmutableUntilTransferCompletes;
+      args.device = c_api_device->c_device();
+      args.memory = nullptr;  // Use default memory space.
+      args.device_layout = nullptr;
+      args.metadata = tensor->metadata();
+      args.done_with_host_buffer = nullptr;
+      args.buffer = nullptr;
+
+      PJRT_Error* error =
+          buffer_metadata_extension_->buffer_from_host_buffer_with_metadata(
+              &args);
+      if (error != nullptr) {
+        auto status = pjrt::PjrtErrorToStatus(error, pjrt_c_api);
+        pjrt_c_api->PJRT_Error_Destroy(
+            PJRT_Error_Destroy_Args{sizeof(PJRT_Error_Destroy_Args), nullptr,
+                                    error});
+        XLA_CHECK(false) << "BufferFromHostBufferWithMetadata failed: "
+                         << status.message();
+      }
+
+      // Wrap the C API buffer into a C++ PjRtBuffer.
+      buffer = std::make_shared<xla::PjRtCApiBuffer>(c_api_client, args.buffer);
+
+      // Handle done_with_host_buffer event if provided.
+      if (args.done_with_host_buffer != nullptr) {
+        // Destroy the event - we rely on the buffer destructor to ensure
+        // proper synchronization.
+        PJRT_Event_Destroy_Args destroy_args;
+        destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;
+        destroy_args.extension_start = nullptr;
+        destroy_args.event = args.done_with_host_buffer;
+        pjrt_c_api->PJRT_Event_Destroy(&destroy_args);
+      }
+    } else {
+      // Standard path: use PjRtClient::BufferFromHostBuffer.
+      buffer =
+          std::move(client_
+                        ->BufferFromHostBuffer(
+                            tensor->data(), tensor->primitive_type(),
+                            tensor->dimensions(), tensor->byte_strides(),
+                            xla::PjRtClient::HostBufferSemantics::
+                                kImmutableUntilTransferCompletes,
+                            [tensor]() { /* frees tensor */ },
+                            *pjrt_device->default_memory_space(),
+                            /*device_layout=*/nullptr)
+                        .value());
+    }
 
     ComputationClient::DataPtr data =
         std::make_shared<PjRtData>(tensor->device(), tensor->shape(), buffer);
