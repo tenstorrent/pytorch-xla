@@ -64,6 +64,14 @@ xla::Shape host_output_shape(xla::PjRtBuffer* buffer) {
   return xla::ShapeUtil::DeviceShapeToHostShape(shape);
 }
 
+// Check if the experimental buffer metadata extension is enabled.
+// This gates the custom BufferFromHostBufferWithMetadata path.
+bool UseBufferMetadataExtension() {
+  static bool enabled =
+      sys_util::GetEnvBool("XLA_PJRT_BUFFER_METADATA_EXTENSION", false);
+  return enabled;
+}
+
 torch::lazy::hash_t hash_comp_env(
     xla::PjRtClient* client, std::vector<xla::PjRtDevice*>& ordered_devices) {
   torch::lazy::hash_t hash = hash::HashXlaEnvVars();
@@ -303,10 +311,11 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
   datas.reserve(tensors.size());
   int64_t total_size = 0;
 
-  // Get C API client if extension is available (needed for metadata path).
+  // Get C API client if extension is available and enabled (needed for metadata
+  // path). Gated by XLA_PJRT_BUFFER_METADATA_EXTENSION=1 env var.
   xla::PjRtCApiClient* c_api_client = nullptr;
   const PJRT_Api* pjrt_c_api = nullptr;
-  if (buffer_metadata_extension_ != nullptr) {
+  if (UseBufferMetadataExtension() && buffer_metadata_extension_ != nullptr) {
     c_api_client = dynamic_cast<xla::PjRtCApiClient*>(client_.get());
     if (c_api_client != nullptr) {
       pjrt_c_api = c_api_client->pjrt_c_api();
@@ -319,9 +328,10 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
 
     std::shared_ptr<xla::PjRtBuffer> buffer;
 
-    // Use metadata extension if available and tensor has metadata.
-    if (buffer_metadata_extension_ != nullptr && c_api_client != nullptr &&
-        pjrt_c_api != nullptr && tensor->metadata() != nullptr) {
+    // Use metadata extension if enabled, available, and tensor has metadata.
+    if (UseBufferMetadataExtension() && buffer_metadata_extension_ != nullptr &&
+        c_api_client != nullptr && pjrt_c_api != nullptr &&
+        tensor->metadata() != nullptr) {
       // Get the underlying C API device.
       auto* c_api_device = dynamic_cast<xla::PjRtCApiDevice*>(pjrt_device);
       XLA_CHECK(c_api_device != nullptr)
