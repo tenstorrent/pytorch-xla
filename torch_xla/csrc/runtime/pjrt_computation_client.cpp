@@ -364,9 +364,11 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
               &args);
       if (error != nullptr) {
         auto status = pjrt::PjrtErrorToStatus(error, pjrt_c_api);
-        pjrt_c_api->PJRT_Error_Destroy(
-            PJRT_Error_Destroy_Args{sizeof(PJRT_Error_Destroy_Args), nullptr,
-                                    error});
+        PJRT_Error_Destroy_Args destroy_args;
+        destroy_args.struct_size = sizeof(PJRT_Error_Destroy_Args);
+        destroy_args.extension_start = nullptr;
+        destroy_args.error = error;
+        pjrt_c_api->PJRT_Error_Destroy(&destroy_args);
         XLA_CHECK(false) << "BufferFromHostBufferWithMetadata failed: "
                          << status.message();
       }
@@ -379,19 +381,21 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
       // callback that keeps the tensor alive until the transfer completes.
       if (args.done_with_host_buffer != nullptr) {
         // Register callback - captures tensor to keep it alive until transfer
-        // completes. The event is automatically destroyed after callback runs.
+        // completes. Event is destroyed by unique_ptr at end of scope.
         std::unique_ptr<PJRT_Event, pjrt::PJRT_EventDeleter> event(
             args.done_with_host_buffer, pjrt::MakeEventDeleter(pjrt_c_api));
 
         PJRT_Error* event_error = pjrt::InvokePjRtEventWhenReady(
-            pjrt_c_api, event.release(),
+            pjrt_c_api, event.get(),
             [tensor]() { /* tensor destructor runs when transfer completes */ });
 
         if (event_error != nullptr) {
           auto status = pjrt::PjrtErrorToStatus(event_error, pjrt_c_api);
-          pjrt_c_api->PJRT_Error_Destroy(
-              PJRT_Error_Destroy_Args{sizeof(PJRT_Error_Destroy_Args), nullptr,
-                                      event_error});
+          PJRT_Error_Destroy_Args destroy_args;
+          destroy_args.struct_size = sizeof(PJRT_Error_Destroy_Args);
+          destroy_args.extension_start = nullptr;
+          destroy_args.error = event_error;
+          pjrt_c_api->PJRT_Error_Destroy(&destroy_args);
           TF_VLOG(1) << "Event callback registration failed: "
                      << status.message();
         }
