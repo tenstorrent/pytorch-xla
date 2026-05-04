@@ -922,7 +922,9 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
   XLATensorPtr xtensor = bridge::GetXlaTensor(input);
 
   // For Non DeviceData IR values, we directly attach the sharding spec to the
-  // xtensor.
+  // xtensor. 
+
+  // For outputs/intermediates
   const DeviceData* device_data_node = nullptr;
   if (xtensor->CurrentIrValue()) {
     device_data_node = DeviceData::Cast(xtensor->CurrentIrValue().node.get());
@@ -941,6 +943,8 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
   // For data, we need to deal with the data transfers between
   // host and device.
   at::Tensor cpu_tensor;
+  
+  // CurrentTensorData is backed by CPU tensor after move .to(device).
   if (xtensor->CurrentTensorData().has_value()) {
     TORCH_LAZY_COUNTER("VirtualDeviceUsage", 1);
     // When virtual device is enabled for SPMD, we defer the initial
@@ -979,6 +983,8 @@ void ShardingUtil::XlaMarkSharding(const at::Tensor& input,
     XLA_CHECK_EQ(tensors.size(), 1);
     cpu_tensor = tensors[0];
   }
+
+  // Called once per tensor we mark sharding on explicitly - path #1
   auto xla_data = CreateTensorsData(
       std::vector<at::Tensor>{cpu_tensor},
       std::vector<XLATensor::ShardingSpecPtr>{new_sharding_spec},
