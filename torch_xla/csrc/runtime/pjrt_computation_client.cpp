@@ -889,10 +889,14 @@ PjRtComputationClient::ExecuteComputation(
   for (auto& argument : arguments) {
     const PjRtData* pjrt_data = dynamic_cast<PjRtData*>(argument.get());
 
-    XLA_CHECK(pjrt_device == pjrt_data->buffer->device())
-        << "The device currently being used : " << pjrt_device->DebugString()
-        << " is different from the device where the buffer resides: "
-        << pjrt_data->buffer->device()->DebugString();
+    // Skip device check for placeholder data (null buffer).
+    // The PJRT plugin is responsible for providing actual buffers.
+    if (pjrt_data->buffer != nullptr) {
+      XLA_CHECK(pjrt_device == pjrt_data->buffer->device())
+          << "The device currently being used : " << pjrt_device->DebugString()
+          << " is different from the device where the buffer resides: "
+          << pjrt_data->buffer->device()->DebugString();
+    }
     buffers.push_back(pjrt_data->buffer.get());
   }
 
