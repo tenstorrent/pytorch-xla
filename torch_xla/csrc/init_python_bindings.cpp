@@ -12,7 +12,9 @@
 #include <torch/csrc/lazy/core/ir_util.h>
 #include <torch/csrc/lazy/core/lazy_graph_executor.h>
 
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <optional>
@@ -3401,24 +3403,52 @@ void InitXlaModuleBindings(py::module m) {
            [](const std::string& hash_str,
               const std::vector<at::IValue>& graph_inputs)
                -> std::vector<at::Tensor> {
+             using _tt_clock = std::chrono::steady_clock;
+             auto _tt_us = [](_tt_clock::duration d) {
+               return std::chrono::duration_cast<std::chrono::microseconds>(d)
+                   .count();
+             };
+             auto _tt_t0 = _tt_clock::now();
              XLA_CHECK(hash_str.size() == sizeof(torch::lazy::hash_t));
              torch::lazy::hash_t hash =
                  *(torch::lazy::hash_t*)(hash_str.c_str());
              // Device will be Virtual device if SPMD is enabled.
              torch::lazy::BackendDevice device =
                  torch_xla::bridge::GetCurrentDevice();
+             auto _tt_t_dev = _tt_clock::now();
              auto results =
                  XLAGraphExecutor::Get()->ExecuteComputationWithBarrier(
                      hash, graph_inputs, device);
+             auto _tt_t_exec = _tt_clock::now();
              std::vector<at::Tensor> retlist;
+             retlist.reserve(results.size());
+             long long _tt_create_us = 0;
+             long long _tt_aten_us = 0;
              {
                TORCH_LAZY_TIMED("RunCachedGraphOutputData");
                // Convert result back to at::tensor
                for (const auto& data : results) {
+                 auto _it_a = _tt_clock::now();
                  XLATensorPtr xla_tensor = torch_xla::XLATensor::Create(data);
+                 auto _it_b = _tt_clock::now();
+                 _tt_create_us += _tt_us(_it_b - _it_a);
                  retlist.push_back(bridge::AtenFromXlaTensor(xla_tensor));
+                 auto _it_c = _tt_clock::now();
+                 _tt_aten_us += _tt_us(_it_c - _it_b);
                }
              }
+             auto _tt_t_end = _tt_clock::now();
+             std::fprintf(
+                 stderr,
+                 "[xla-binding] total=%lldus | dev=%lld exec=%lld out=%lld | "
+                 "n_in=%zu n_out=%zu | out_breakdown: create=%lld aten=%lld\n",
+                 static_cast<long long>(_tt_us(_tt_t_end - _tt_t0)),
+                 static_cast<long long>(_tt_us(_tt_t_dev - _tt_t0)),
+                 static_cast<long long>(_tt_us(_tt_t_exec - _tt_t_dev)),
+                 static_cast<long long>(_tt_us(_tt_t_end - _tt_t_exec)),
+                 graph_inputs.size(), results.size(), _tt_create_us,
+                 _tt_aten_us);
+             std::fflush(stderr);
 
              return retlist;
            })  // -----------Dynamo Integration API End-----------------------

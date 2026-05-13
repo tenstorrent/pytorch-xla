@@ -12,8 +12,10 @@
 #include <torch/csrc/lazy/core/util.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 #include <functional>
@@ -735,6 +737,12 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
     const torch::lazy::BackendDevice& device) {
   tsl::profiler::TraceMe activity("ExecuteComputationWithBarrier",
                                   tsl::profiler::TraceMeLevel::kInfo);
+  using _tt_clock = std::chrono::steady_clock;
+  auto _tt_us = [](_tt_clock::duration d) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
+  };
+  auto _tt_t_start = _tt_clock::now();
+
   MaybeDumpGraph("dynamo", hash);
   auto cachedComputation =
       XLAGraphExecutor::Get()->GetComputationCache()->Get(hash);
@@ -747,11 +755,13 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
       << "Failed to get computation by hash " << torch::lazy::HashToString(hash)
       << ". Maybe the entry get "
          "kicked out of the LRU cache";
+  auto _tt_t_cache = _tt_clock::now();
 
   DebugUtil::analyze_graph_execution_python_frame(
       DebugUtil::GraphAnalysisSource::DynamoExecution,
       /*graph_hash=*/hash,
       /*program_shape=*/&(cachedComputation->computation->program_shape()));
+  auto _tt_t_debug = _tt_clock::now();
 
   // Create DataPlaceHolder that will get filled in async executions.
   const std::vector<xla::Shape>* output_shapes =
@@ -759,7 +769,10 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
   std::vector<torch::lazy::BackendDataPtr> placeholders;
 
   std::vector<XLATensor::ShardingSpecPtr> sharding_specs;
+  bool _tt_was_sharded_path = false;
+  bool _tt_first_sharding_compute = false;
   if (static_cast<XlaDeviceType>(device.type()) == XlaDeviceType::SPMD) {
+    _tt_was_sharded_path = true;
     sharding_specs =
         std::vector<XLATensor::ShardingSpecPtr>(output_shapes->size());
     // TODO(JackCaoG): Use LRU cache and add same cache to non-dynamo path.
@@ -771,6 +784,7 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
     // one output sharding. We can cache this sharding here to avoid retrive
     // the sharding from the computation every time.
     if (output_sharding_hash.find(hash) == output_sharding_hash.end()) {
+      _tt_first_sharding_compute = true;
       TORCH_LAZY_COUNTER("UncachedOutputSharding", 1);
       output_sharding_hash[hash] = ShardingUtil::GetOutputSharding(
           *output_shapes, cachedComputation->computation);
@@ -785,6 +799,7 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
       placeholders.push_back(handle);
     }
   }
+  auto _tt_t_placeholders = _tt_clock::now();
 
   SyncTensorCollection coll;
   coll.device = device;
@@ -795,8 +810,20 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
     coll.unlocker = DeviceLockerArena::Get()->LockDevices({device});
     TF_VLOG(5) << "Locking device " << device.toString() << " Done!";
   }
+  auto _tt_t_lock = _tt_clock::now();
+
+  // Per-input sub-step accumulators (only filled when the loop is large enough
+  // to be interesting; we always populate the totals but per-input drilldown
+  // becomes noisy for small graphs).
+  long long _tt_tryget_us = 0;
+  long long _tt_ircheck_us = 0;
+  long long _tt_getxla_us = 0;
+  long long _tt_t2xd_us = 0;  // TensorToXlaData (non-XLATensor inputs)
+  long long _tt_pushback_us = 0;
+  std::size_t _tt_n_inputs = graph_inputs.size();
 
   std::vector<torch::lazy::BackendDataPtr> arguments;
+  arguments.reserve(_tt_n_inputs);
   {
     // GetXlaData must be called within a lock region, otherwise it might
     // extract the placeholder inserted by previous execution.
@@ -804,24 +831,39 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
     // setup the arguments
     for (auto& ivalue : graph_inputs) {
       torch::lazy::BackendDataPtr dataptr;
-      if (auto xla_tensor_ptr = bridge::TryGetXlaTensor(ivalue.toTensor())) {
+      auto _it_a = _tt_clock::now();
+      auto xla_tensor_ptr = bridge::TryGetXlaTensor(ivalue.toTensor());
+      auto _it_b = _tt_clock::now();
+      _tt_tryget_us += _tt_us(_it_b - _it_a);
+      if (xla_tensor_ptr) {
         bool is_non_data_ir =
             xla_tensor_ptr->CurrentIrValue().node != nullptr &&
             (torch_xla::DeviceData::Cast(
                  xla_tensor_ptr->CurrentIrValue().node.get()) == nullptr);
+        auto _it_c = _tt_clock::now();
+        _tt_ircheck_us += _tt_us(_it_c - _it_b);
         XLA_CHECK(!is_non_data_ir)
             << "input data to dynamo graph can not be a pending ir, please set "
                "`torch_xla._dynamo.config.skip_input_data_check` to False";
         dataptr = xla_tensor_ptr->GetXlaData();
+        auto _it_d = _tt_clock::now();
+        _tt_getxla_us += _tt_us(_it_d - _it_c);
       } else {
         XLA_CHECK(device.type() != (int8_t)XlaDeviceType::SPMD)
             << "SPMD device data should already be on the XLA backend "
                "(XLATensor).";
+        auto _it_c = _tt_clock::now();
         dataptr = torch_xla::TensorToXlaData(ivalue.toTensor(), device);
+        auto _it_d = _tt_clock::now();
+        _tt_t2xd_us += _tt_us(_it_d - _it_c);
       }
+      auto _it_e = _tt_clock::now();
       arguments.push_back(dataptr);
+      auto _it_f = _tt_clock::now();
+      _tt_pushback_us += _tt_us(_it_f - _it_e);
     }
   }
+  auto _tt_t_inputs = _tt_clock::now();
 
   std::shared_ptr<XLAGraphExecutor::Async> async = std::make_shared<Async>(
       &coll, std::move(arguments), placeholders, std::move(cachedComputation));
@@ -887,7 +929,28 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
     }
   };
 
+  auto _tt_t_before_sched = _tt_clock::now();
   thread::Schedule(async->mwait.Completer(std::move(syncfn)));
+  auto _tt_t_after_sched = _tt_clock::now();
+
+  std::fprintf(
+      stderr,
+      "[xla-exec] total=%lldus | cache=%lld debug=%lld place=%lld lock=%lld "
+      "inputs=%lld sched=%lld | n_in=%zu n_out=%zu sharded=%d "
+      "first_shard_compute=%d | in_breakdown: tryget=%lld ircheck=%lld "
+      "getxla=%lld t2xd=%lld pushback=%lld\n",
+      static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_start)),
+      static_cast<long long>(_tt_us(_tt_t_cache - _tt_t_start)),
+      static_cast<long long>(_tt_us(_tt_t_debug - _tt_t_cache)),
+      static_cast<long long>(_tt_us(_tt_t_placeholders - _tt_t_debug)),
+      static_cast<long long>(_tt_us(_tt_t_lock - _tt_t_placeholders)),
+      static_cast<long long>(_tt_us(_tt_t_inputs - _tt_t_lock)),
+      static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_before_sched)),
+      _tt_n_inputs, placeholders.size(),
+      _tt_was_sharded_path ? 1 : 0, _tt_first_sharding_compute ? 1 : 0,
+      _tt_tryget_us, _tt_ircheck_us, _tt_getxla_us, _tt_t2xd_us,
+      _tt_pushback_us);
+  std::fflush(stderr);
 
   return placeholders;
 }
