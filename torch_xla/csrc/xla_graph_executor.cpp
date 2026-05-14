@@ -933,24 +933,30 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
   thread::Schedule(async->mwait.Completer(std::move(syncfn)));
   auto _tt_t_after_sched = _tt_clock::now();
 
-  std::fprintf(
-      stderr,
-      "[xla-exec] total=%lldus | cache=%lld debug=%lld place=%lld lock=%lld "
-      "inputs=%lld sched=%lld | n_in=%zu n_out=%zu sharded=%d "
-      "first_shard_compute=%d | in_breakdown: tryget=%lld ircheck=%lld "
-      "getxla=%lld t2xd=%lld pushback=%lld\n",
-      static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_start)),
-      static_cast<long long>(_tt_us(_tt_t_cache - _tt_t_start)),
-      static_cast<long long>(_tt_us(_tt_t_debug - _tt_t_cache)),
-      static_cast<long long>(_tt_us(_tt_t_placeholders - _tt_t_debug)),
-      static_cast<long long>(_tt_us(_tt_t_lock - _tt_t_placeholders)),
-      static_cast<long long>(_tt_us(_tt_t_inputs - _tt_t_lock)),
-      static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_before_sched)),
-      _tt_n_inputs, placeholders.size(),
-      _tt_was_sharded_path ? 1 : 0, _tt_first_sharding_compute ? 1 : 0,
-      _tt_tryget_us, _tt_ircheck_us, _tt_getxla_us, _tt_t2xd_us,
-      _tt_pushback_us);
-  std::fflush(stderr);
+  static bool _tt_profile_enabled = []() {
+    const char *v = std::getenv("TT_PROFILE");
+    return v && std::atoi(v) != 0;
+  }();
+  if (_tt_profile_enabled) {
+    std::fprintf(
+        stderr,
+        "[xla-exec] total=%lldus | cache=%lld debug=%lld place=%lld lock=%lld "
+        "inputs=%lld sched=%lld | n_in=%zu n_out=%zu sharded=%d "
+        "first_shard_compute=%d | in_breakdown: tryget=%lld ircheck=%lld "
+        "getxla=%lld t2xd=%lld pushback=%lld\n",
+        static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_start)),
+        static_cast<long long>(_tt_us(_tt_t_cache - _tt_t_start)),
+        static_cast<long long>(_tt_us(_tt_t_debug - _tt_t_cache)),
+        static_cast<long long>(_tt_us(_tt_t_placeholders - _tt_t_debug)),
+        static_cast<long long>(_tt_us(_tt_t_lock - _tt_t_placeholders)),
+        static_cast<long long>(_tt_us(_tt_t_inputs - _tt_t_lock)),
+        static_cast<long long>(_tt_us(_tt_t_after_sched - _tt_t_before_sched)),
+        _tt_n_inputs, placeholders.size(),
+        _tt_was_sharded_path ? 1 : 0, _tt_first_sharding_compute ? 1 : 0,
+        _tt_tryget_us, _tt_ircheck_us, _tt_getxla_us, _tt_t2xd_us,
+        _tt_pushback_us);
+    std::fflush(stderr);
+  }
 
   return placeholders;
 }

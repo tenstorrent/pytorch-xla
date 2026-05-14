@@ -3438,17 +3438,23 @@ void InitXlaModuleBindings(py::module m) {
                }
              }
              auto _tt_t_end = _tt_clock::now();
-             std::fprintf(
-                 stderr,
-                 "[xla-binding] total=%lldus | dev=%lld exec=%lld out=%lld | "
-                 "n_in=%zu n_out=%zu | out_breakdown: create=%lld aten=%lld\n",
-                 static_cast<long long>(_tt_us(_tt_t_end - _tt_t0)),
-                 static_cast<long long>(_tt_us(_tt_t_dev - _tt_t0)),
-                 static_cast<long long>(_tt_us(_tt_t_exec - _tt_t_dev)),
-                 static_cast<long long>(_tt_us(_tt_t_end - _tt_t_exec)),
-                 graph_inputs.size(), results.size(), _tt_create_us,
-                 _tt_aten_us);
-             std::fflush(stderr);
+             static bool _tt_profile_enabled = []() {
+               const char *v = std::getenv("TT_PROFILE");
+               return v && std::atoi(v) != 0;
+             }();
+             if (_tt_profile_enabled) {
+               std::fprintf(
+                   stderr,
+                   "[xla-binding] total=%lldus | dev=%lld exec=%lld out=%lld | "
+                   "n_in=%zu n_out=%zu | out_breakdown: create=%lld aten=%lld\n",
+                   static_cast<long long>(_tt_us(_tt_t_end - _tt_t0)),
+                   static_cast<long long>(_tt_us(_tt_t_dev - _tt_t0)),
+                   static_cast<long long>(_tt_us(_tt_t_exec - _tt_t_dev)),
+                   static_cast<long long>(_tt_us(_tt_t_end - _tt_t_exec)),
+                   graph_inputs.size(), results.size(), _tt_create_us,
+                   _tt_aten_us);
+               std::fflush(stderr);
+             }
 
              return retlist;
            })  // -----------Dynamo Integration API End-----------------------
