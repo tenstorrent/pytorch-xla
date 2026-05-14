@@ -1,6 +1,7 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -343,16 +344,28 @@ std::shared_ptr<PjRtComputationClient::PjRtData>
 PjRtComputationClient::ReplicateShardedData(
     const ComputationClient::DataPtr& handle) {
   if (auto unsharded_data = std::dynamic_pointer_cast<PjRtData>(handle)) {
+    std::cout << "[PJRT] ReplicateShardedData: handle is already unsharded "
+                 "PjRtData -- no compile needed" << std::endl;
     return unsharded_data;
   } else if (auto sharded_data =
                  std::dynamic_pointer_cast<PjRtShardedData>(handle)) {
     XLA_COUNTER("ReplicateShardedData", 1);
     TF_VLOG(1) << "ReplicateShardedData (handle=" << sharded_data->GetHandle()
                << ", shape=" << sharded_data->shape() << ")";
+    std::cout << "[PJRT] ReplicateShardedData: ENTER handle="
+              << sharded_data->GetHandle()
+              << " shape=" << sharded_data->shape().ToString()
+              << " sharding_type=" << sharded_data->GetSharding().type()
+              << std::endl;
     if (sharded_data->GetSharding().type() == xla::OpSharding::REPLICATED) {
+      std::cout << "[PJRT] ReplicateShardedData: REPLICATED fast-path "
+                   "(returning shards[0], NO compile)" << std::endl;
       // Data is replicated, return the first shard
       return sharded_data->shards[0];
     }
+    std::cout << "[PJRT] ReplicateShardedData: SLOW PATH -- building identity "
+                 "HLO and calling Compile() (no cache on this path!)"
+              << std::endl;
     xla::XlaBuilder builder("ReplicateShardedData");
     xla::Shape shape = sharded_data->shape();
     builder.SetSharding(sharded_data->GetSharding());
@@ -514,6 +527,8 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
+  std::cout << "[PJRT] TransferFromDevice: handles=" << handles.size()
+            << std::endl;
   std::vector<xla::PjRtFuture<>> futures;
   futures.reserve(handles.size());
   std::vector<xla::Literal> literals;
@@ -552,6 +567,14 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
   metrics::TimedSection timed(metrics_fn());
   tsl::profiler::TraceMe activity("PjRtComputationClient::Compile",
                                   tsl::profiler::TraceMeLevel::kInfo);
+  // This entry point has NO cache -- every caller pays a fresh compile.
+  // Useful to see which high-level path triggered us.
+  for (const auto& inst : instances) {
+    std::cout << "[PJRT] Compile: name=" << inst.computation.name()
+              << " device=" << inst.compilation_device
+              << " is_sharded=" << inst.is_sharded
+              << " eager_mode=" << inst.eager_mode << std::endl;
+  }
   std::vector<ComputationClient::ComputationPtr> computations;
   static bool enable_cm_in_mp =
       runtime::sys_util::GetEnvBool("ENABLE_COLLECTIVE_MATMUL_IN_MP", false);
