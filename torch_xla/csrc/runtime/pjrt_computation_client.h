@@ -350,6 +350,17 @@ class PjRtComputationClient : public ComputationClient {
 
   // Use XLA replication to re-assemble the sharded data.
   std::shared_ptr<PjRtData> ReplicateShardedData(const DataPtr& handle);
+
+  // Host-side stitch: reads each shard's PJRT buffer and assembles the global
+  // literal directly, bypassing the identity-HLO compile+execute path used by
+  // ReplicateShardedData. Only handles OTHER-typed sharding with explicit
+  // tile_assignment_devices (optionally with replicate_on_last_tile_dim);
+  // callers must fall back to ReplicateShardedData for other shapes. Appends
+  // the assembled global literal to `literals_out` and returns a reference to
+  // it.
+  xla::Literal& StitchShardedHandle(
+      std::shared_ptr<PjRtShardedData> sharded_data,
+      std::vector<xla::Literal>& literals_out);
 };
 
 }  // namespace runtime

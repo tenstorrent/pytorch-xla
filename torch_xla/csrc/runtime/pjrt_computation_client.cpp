@@ -23,6 +23,7 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/ir/tile_assignment.h"
 #include "xla/literal.h"
 #include "xla/pjrt/c/pjrt_c_api_gpu_extension.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
@@ -535,8 +536,44 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   literals.reserve(handles.size());
   int64_t total_size = 0;
   for (auto handle : handles) {
-    // Use XLA replication to reassemble the sharded data. If input handle
-    // is not sharded, then it is a no-op.
+    // For tiled-OTHER sharded data, bypass the identity-HLO compile+execute
+    // (ReplicateShardedData) entirely and stitch shards on the host.
+    auto sharded_data = std::dynamic_pointer_cast<PjRtShardedData>(handle);
+    if (sharded_data) {
+      const xla::OpSharding& sharding = sharded_data->GetSharding();
+      const bool is_other = sharding.type() == xla::OpSharding::OTHER;
+      const bool no_last_tile_dims = sharding.last_tile_dims().empty();
+      const bool has_iota = !sharding.iota_reshape_dims().empty();
+      std::cout << "[PJRT] TransferFromDevice: sharded handle"
+                << " type=" << sharding.type() << " (OTHER=" << is_other << ")"
+                << " last_tile_dims_size=" << sharding.last_tile_dims().size()
+                << " iota_reshape_dims_size="
+                << sharding.iota_reshape_dims().size()
+                << " replicate_on_last_tile_dim="
+                << sharding.replicate_on_last_tile_dim()
+                << " tile_assignment_devices_size="
+                << sharding.tile_assignment_devices().size()
+                << " shape=" << sharded_data->shape().ToString() << std::endl;
+      if (is_other && no_last_tile_dims) {
+        std::cout << "[PJRT] TransferFromDevice: HOST-STITCH path for shape="
+                  << sharded_data->shape().ToString()
+                  << " (iota_resolved=" << (has_iota ? "YES" : "NO") << ")"
+                  << std::endl;
+        xla::Literal& global_lit =
+            StitchShardedHandle(sharded_data, literals);
+        total_size += global_lit.size_bytes();
+        continue;
+      }
+      std::cout << "[PJRT] TransferFromDevice: FALLBACK to "
+                   "ReplicateShardedData reason="
+                << (!is_other ? "type_not_OTHER " : "")
+                << (!no_last_tile_dims ? "has_last_tile_dims " : "")
+                << std::endl;
+    } else {
+      std::cout << "[PJRT] TransferFromDevice: unsharded handle (PjRtData)"
+                << std::endl;
+    }
+    // Fallback: unsharded data, REPLICATED, or unsupported sharding shapes.
     std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
     XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
     XLA_CHECK(pjrt_data->buffer != nullptr)
@@ -556,6 +593,171 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   InboundDataMetric()->AddSample(total_size);
 
   return literals;
+}
+
+xla::Literal& PjRtComputationClient::StitchShardedHandle(
+    std::shared_ptr<PjRtShardedData> sharded_data,
+    std::vector<xla::Literal>& literals_out) {
+  const xla::OpSharding& sharding = sharded_data->GetSharding();
+  const auto& shards = sharded_data->shards;
+  XLA_CHECK(!shards.empty()) << "Sharded data has no shards";
+
+  std::cout << "[PJRT] StitchShardedHandle: ENTER global_shape="
+            << sharded_data->shape().ToString() << " num_shards="
+            << shards.size() << std::endl;
+
+  // 1. Kick off all per-shard host transfers in parallel.
+  std::vector<xla::Literal> shard_literals;
+  std::vector<xla::PjRtFuture<>> shard_futures;
+  shard_literals.reserve(shards.size());
+  shard_futures.reserve(shards.size());
+  for (const auto& shard : shards) {
+    XLA_CHECK(shard->buffer != nullptr)
+        << "Shard PjRt buffer is null in StitchShardedHandle";
+    shard_literals.emplace_back(host_output_shape(shard->buffer.get()));
+    shard_futures.push_back(shard->buffer->ToLiteral(&shard_literals.back()));
+  }
+  std::cout << "[PJRT] StitchShardedHandle: kicked off " << shards.size()
+            << " parallel ToLiteral reads, awaiting" << std::endl;
+  for (auto& future : shard_futures) {
+    absl::Status status = future.Await();
+    XLA_CHECK_OK(status) << "Failed to await shard ToLiteral in "
+                         << __FUNCTION__;
+  }
+  std::cout << "[PJRT] StitchShardedHandle: all shard reads complete"
+            << std::endl;
+
+  // 2. Allocate the global literal with element_type and layout copied from
+  //    a shard buffer (layouts are dim-size independent, so reusing is safe).
+  auto* sample_buffer = shards[0]->buffer.get();
+  xla::Shape global_shape = xla::ShapeUtil::MakeShape(
+      sample_buffer->element_type(), sharded_data->shape().dimensions());
+  *global_shape.mutable_layout() = sample_buffer->layout()->xla_layout();
+  global_shape = xla::ShapeUtil::DeviceShapeToHostShape(global_shape);
+  xla::Literal& global_lit = literals_out.emplace_back(global_shape);
+
+  // 3. Compute the tile layout. replicate_on_last_tile_dim collapses the
+  //    trailing dim into a replication group instead of a real partition.
+  const auto& tile_dims = sharding.tile_assignment_dimensions();
+  const bool replicate_last = sharding.replicate_on_last_tile_dim();
+  const int n_dims = tile_dims.size() - (replicate_last ? 1 : 0);
+  const int replicate_factor =
+      replicate_last ? tile_dims[tile_dims.size() - 1] : 1;
+
+  const auto global_dims = sharded_data->shape().dimensions();
+  std::vector<int64_t> shard_shape(n_dims);
+  for (int d = 0; d < n_dims; ++d) {
+    // Ceil-div: XLA pads each shard to this size for non-divisible shapes.
+    shard_shape[d] = global_dims[d] / tile_dims[d] +
+                     (global_dims[d] % tile_dims[d] != 0);
+  }
+  {
+    std::cout << "[PJRT] StitchShardedHandle: tile_dims=[";
+    for (int d = 0; d < (int)tile_dims.size(); ++d) {
+      std::cout << tile_dims[d] << (d + 1 < (int)tile_dims.size() ? "," : "");
+    }
+    std::cout << "] replicate_last=" << replicate_last
+              << " replicate_factor=" << replicate_factor
+              << " shard_shape=[";
+    for (int d = 0; d < n_dims; ++d) {
+      std::cout << shard_shape[d] << (d + 1 < n_dims ? "," : "");
+    }
+    std::cout << "]" << std::endl;
+  }
+
+  // 4. Map global device ordinal → index into `shards`. shards[i]->device()
+  //    is the canonical source of truth here; tile_assignment_devices(i)
+  //    holds global ordinals from the OpSharding proto.
+  std::unordered_map<int64_t, int> ord_to_shard_idx;
+  for (size_t i = 0; i < shards.size(); ++i) {
+    std::vector<std::string> parts =
+        absl::StrSplit(shards[i]->device(), ':');
+    XLA_CHECK_EQ(parts.size(), 2)
+        << "Unexpected shard device string: " << shards[i]->device();
+    ord_to_shard_idx[std::stoll(parts[1])] = static_cast<int>(i);
+  }
+
+  // 5. Resolve the tile_assignment device list. Modern XLA uses an iota
+  //    encoding (iota_reshape_dims + iota_transpose_perm) instead of an
+  //    explicit tile_assignment_devices array; xla::TileAssignment resolves
+  //    both forms to the same flat row-major list of global device ordinals.
+  std::vector<int64_t> tile_assignment_devices;
+  if (!sharding.iota_reshape_dims().empty()) {
+    xla::TileAssignment ta(sharding.tile_assignment_dimensions(),
+                           sharding.iota_reshape_dims(),
+                           sharding.iota_transpose_perm());
+    tile_assignment_devices.assign(ta.array().begin(), ta.array().end());
+    std::cout << "[PJRT] StitchShardedHandle: resolved iota tile_assignment to "
+              << tile_assignment_devices.size() << " devices" << std::endl;
+  } else {
+    tile_assignment_devices.assign(sharding.tile_assignment_devices().begin(),
+                                   sharding.tile_assignment_devices().end());
+  }
+
+  // 6. Walk every distinct tile position (one per data shard, replicas
+  //    excluded) and copy the corresponding shard into the global literal
+  //    at its tile offset.
+  int64_t total_tiles = 1;
+  for (int d = 0; d < n_dims; ++d) total_tiles *= tile_dims[d];
+
+  for (int64_t t = 0; t < total_tiles; ++t) {
+    // tile_assignment_devices is laid out row-major over
+    // (tile_dims[0], ..., tile_dims[-1]); when replicate_last is set the
+    // trailing dim is the replica group, so we step by replicate_factor and
+    // pick the first replica deterministically.
+    const int64_t linear_idx = t * replicate_factor;
+    const int64_t global_ord = tile_assignment_devices[linear_idx];
+    const auto it = ord_to_shard_idx.find(global_ord);
+    XLA_CHECK(it != ord_to_shard_idx.end())
+        << "No local shard found for global device ordinal " << global_ord;
+    const int shard_idx = it->second;
+
+    // Unflatten the tile position to per-dim coordinates (row-major).
+    std::vector<int64_t> tile_coord(n_dims);
+    int64_t remaining = t;
+    for (int d = n_dims - 1; d >= 0; --d) {
+      tile_coord[d] = remaining % tile_dims[d];
+      remaining /= tile_dims[d];
+    }
+
+    // Clamp copy_size to the real (unpadded) extent for the last tile in
+    // each dim when global_dims doesn't divide evenly.
+    std::vector<int64_t> src_base(n_dims, 0);
+    std::vector<int64_t> dest_base(n_dims);
+    std::vector<int64_t> copy_size(n_dims);
+    for (int d = 0; d < n_dims; ++d) {
+      dest_base[d] = std::min(tile_coord[d] * shard_shape[d], global_dims[d]);
+      const int64_t end =
+          std::min((tile_coord[d] + 1) * shard_shape[d], global_dims[d]);
+      copy_size[d] = end - dest_base[d];
+    }
+
+    absl::Status status = global_lit.CopySliceFrom(
+        shard_literals[shard_idx], src_base, dest_base, copy_size);
+    XLA_CHECK_OK(status) << "CopySliceFrom failed for tile " << t
+                         << " (shard_idx=" << shard_idx
+                         << ", global_ord=" << global_ord << ")";
+
+    std::cout << "[PJRT] StitchShardedHandle: tile " << t << "/" << total_tiles
+              << " coord=[";
+    for (int d = 0; d < n_dims; ++d) {
+      std::cout << tile_coord[d] << (d + 1 < n_dims ? "," : "");
+    }
+    std::cout << "] from shard_idx=" << shard_idx
+              << " (global_ord=" << global_ord << ") dest_base=[";
+    for (int d = 0; d < n_dims; ++d) {
+      std::cout << dest_base[d] << (d + 1 < n_dims ? "," : "");
+    }
+    std::cout << "] copy_size=[";
+    for (int d = 0; d < n_dims; ++d) {
+      std::cout << copy_size[d] << (d + 1 < n_dims ? "," : "");
+    }
+    std::cout << "]" << std::endl;
+  }
+
+  std::cout << "[PJRT] StitchShardedHandle: DONE bytes="
+            << global_lit.size_bytes() << std::endl;
+  return global_lit;
 }
 
 std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
