@@ -350,6 +350,30 @@ class PjRtComputationClient : public ComputationClient {
 
   // Use XLA replication to re-assemble the sharded data.
   std::shared_ptr<PjRtData> ReplicateShardedData(const DataPtr& handle);
+
+  // Cache of compiled identity HLOs used by ReplicateShardedData. The HLO
+  // there is fully determined by (input shape, input OpSharding) — output
+  // sharding is always Replicate — so the compiled executable is safe to reuse
+  // across .cpu() calls on tensors with matching shape+sharding. Without this
+  // cache, every .cpu() on a tiled-sharded tensor pays a fresh XLA compile.
+  struct ReplicateShardedCacheKey {
+    std::string shape_proto;
+    std::string sharding_proto;
+    bool operator==(const ReplicateShardedCacheKey& o) const {
+      return shape_proto == o.shape_proto &&
+             sharding_proto == o.sharding_proto;
+    }
+  };
+  struct ReplicateShardedCacheKeyHash {
+    size_t operator()(const ReplicateShardedCacheKey& k) const {
+      return std::hash<std::string>()(k.shape_proto) ^
+             (std::hash<std::string>()(k.sharding_proto) << 1);
+    }
+  };
+  std::mutex replicate_sharded_cache_mu_;
+  std::unordered_map<ReplicateShardedCacheKey, ComputationPtr,
+                     ReplicateShardedCacheKeyHash>
+      replicate_sharded_cache_;
 };
 
 }  // namespace runtime

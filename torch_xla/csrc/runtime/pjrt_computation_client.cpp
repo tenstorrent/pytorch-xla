@@ -363,44 +363,77 @@ PjRtComputationClient::ReplicateShardedData(
       // Data is replicated, return the first shard
       return sharded_data->shards[0];
     }
-    std::cout << "[PJRT] ReplicateShardedData: SLOW PATH -- building identity "
-                 "HLO and calling Compile() (no cache on this path!)"
-              << std::endl;
-    xla::XlaBuilder builder("ReplicateShardedData");
+
+    // The identity HLO built below is fully determined by (shape, sharding).
+    // Look it up in the cache before paying for a recompile.
     xla::Shape shape = sharded_data->shape();
-    builder.SetSharding(sharded_data->GetSharding());
+    ReplicateShardedCacheKey cache_key{
+        shape.ToProto().SerializeAsString(),
+        sharded_data->GetSharding().SerializeAsString()};
+    ComputationPtr computation;
+    {
+      std::lock_guard<std::mutex> lock(replicate_sharded_cache_mu_);
+      auto it = replicate_sharded_cache_.find(cache_key);
+      if (it != replicate_sharded_cache_.end()) {
+        computation = it->second;
+      }
+    }
 
-    // perform a simple identity calculation to reassemble the input as
-    // replicated output.
-    xla::XlaOp x = xla::Parameter(&builder, 0, shape, "p0");
-    builder.SetSharding(xla::HloSharding::Replicate().ToProto());
-    xla::XlaOp scalar_zero_op = xla::ConvertElementType(
-        xla::ConstantR0(&builder, 0), shape.element_type());
-    xla::XlaOp y = xla::Add(x, scalar_zero_op);
-    auto instruction = XlaBuilderFriend::GetInstruction(y);
-    *instruction->mutable_sharding() = xla::HloSharding::Replicate().ToProto();
+    if (computation) {
+      std::cout << "[PJRT] ReplicateShardedData: CACHE HIT shape="
+                << shape.ToString()
+                << " sharding_type=" << sharded_data->GetSharding().type()
+                << " (reusing compiled identity HLO)" << std::endl;
+    } else {
+      std::cout << "[PJRT] ReplicateShardedData: CACHE MISS shape="
+                << shape.ToString()
+                << " sharding_type=" << sharded_data->GetSharding().type()
+                << " -- building identity HLO and calling Compile()"
+                << std::endl;
+      xla::XlaBuilder builder("ReplicateShardedData");
+      builder.SetSharding(sharded_data->GetSharding());
 
-    xla::XlaComputation computation =
-        GetValueOrThrow(builder.Build(/*remove_dynamic_dimensions=*/false));
-    xla::ProgramShape program_shape =
-        GetValueOrThrow(computation.GetProgramShape());
+      // perform a simple identity calculation to reassemble the input as
+      // replicated output.
+      xla::XlaOp x = xla::Parameter(&builder, 0, shape, "p0");
+      builder.SetSharding(xla::HloSharding::Replicate().ToProto());
+      xla::XlaOp scalar_zero_op = xla::ConvertElementType(
+          xla::ConstantR0(&builder, 0), shape.element_type());
+      xla::XlaOp y = xla::Add(x, scalar_zero_op);
+      auto instruction = XlaBuilderFriend::GetInstruction(y);
+      *instruction->mutable_sharding() =
+          xla::HloSharding::Replicate().ToProto();
 
-    std::string device = GetDefaultDevice();
-    std::vector<torch_xla::runtime::ComputationClient::CompileInstance>
-        instances;
-    instances.push_back({std::move(computation), device,
-                         GetCompilationDevices(device, {}), &shape,
-                         /*should_wrap_parameter=*/false,
-                         /*is_sharded=*/true,
-                         /*allow_spmd_sharding_propagation_to_output=*/false});
-    std::vector<
-        std::shared_ptr<torch_xla::runtime::ComputationClient::Computation>>
-        computations = Compile(std::move(instances));
+      xla::XlaComputation xla_computation =
+          GetValueOrThrow(builder.Build(/*remove_dynamic_dimensions=*/false));
+      xla::ProgramShape program_shape =
+          GetValueOrThrow(xla_computation.GetProgramShape());
+
+      std::string device = GetDefaultDevice();
+      std::vector<torch_xla::runtime::ComputationClient::CompileInstance>
+          instances;
+      instances.push_back({std::move(xla_computation), device,
+                           GetCompilationDevices(device, {}), &shape,
+                           /*should_wrap_parameter=*/false,
+                           /*is_sharded=*/true,
+                           /*allow_spmd_sharding_propagation_to_output=*/false});
+      auto computations = Compile(std::move(instances));
+      computation = std::move(computations.front());
+
+      // First-writer-wins: if another thread compiled the same key while we
+      // were working, prefer their entry so all callers share one executable.
+      std::lock_guard<std::mutex> lock(replicate_sharded_cache_mu_);
+      auto emplace_result =
+          replicate_sharded_cache_.emplace(cache_key, computation);
+      if (!emplace_result.second) {
+        computation = emplace_result.first->second;
+      }
+    }
 
     torch_xla::runtime::ComputationClient::ExecuteReplicatedOptions
         execute_options;
     auto sharded_results =
-        ExecuteReplicated(*computations.front(), {sharded_data},
+        ExecuteReplicated(*computation, {sharded_data},
                           GetLocalDevices(), execute_options);
     XLA_CHECK(sharded_results.size() > 0)
         << "empty ExecuteReplicated results returned.";
