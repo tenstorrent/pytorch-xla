@@ -876,8 +876,25 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
                  << torch::lazy::HashToString(hash) << " on device "
                  << async->device << " ...";
 
+      static bool _tt_syncfn_profile_enabled = []() {
+        const char *v = std::getenv("TT_PROFILE");
+        return v && std::atoi(v) != 0;
+      }();
+      using _sf_clock = std::chrono::steady_clock;
+      auto _sf_us = [](_sf_clock::duration d) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
+      };
+      auto _sf_t_start = _sf_clock::now();
+      auto _sf_t_exec_start = _sf_t_start;
+      auto _sf_t_exec_end = _sf_t_start;
+      auto _sf_t_wrap_end = _sf_t_start;
+      auto _sf_t_assign_end = _sf_t_start;
+      bool _sf_sharded = false;
+      std::size_t _sf_n_results = 0;
+
       std::vector<torch::lazy::BackendDataPtr> results;
       if (async->cached_computation->is_sharded) {
+        _sf_sharded = true;
         // TODO(JackCaoG): handle eager mode
         std::vector<std::string> devices =
             runtime::GetComputationClientOrDie()->GetLocalDevices();
@@ -885,19 +902,27 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
         // OutputHandler creates sharded data for sharded
         // tensor results. Both sharded and unsharded results should be
         // "Assign"ed to the corresponding data placeholders.
+        _sf_t_exec_start = _sf_clock::now();
         std::vector<runtime::ComputationClient::DataPtr> outputs =
             runtime::GetComputationClientOrDie()->ExecuteReplicated(
                 *async->cached_computation->computation,
                 UnwrapXlaData(async->parameters_data), devices,
                 execute_options);
+        _sf_t_exec_end = _sf_clock::now();
         results = WrapXlaData(outputs);
+        _sf_t_wrap_end = _sf_clock::now();
+        _sf_n_results = results.size();
         TF_VLOG(3) << "Executing Dynamo IR sharded graph hash "
                    << torch::lazy::HashToString(hash) << " on devices "
                    << absl::StrJoin(devices, ",") << " done!";
       } else {
+        _sf_t_exec_start = _sf_clock::now();
         results = torch::lazy::getBackend()->ExecuteComputation(
             async->cached_computation->computation, async->parameters_data,
             async->device);
+        _sf_t_exec_end = _sf_clock::now();
+        _sf_t_wrap_end = _sf_t_exec_end;
+        _sf_n_results = results.size();
         TF_VLOG(3) << "Executing Dynamo IR graph hash "
                    << torch::lazy::HashToString(hash) << " on device "
                    << async->device << " done!";
@@ -911,6 +936,20 @@ XLAGraphExecutor::ExecuteComputationWithBarrier(
           XLA_CHECK(async->tensors_data[i] != nullptr);
           async->tensors_data[i]->Assign(*results[i]);
         }
+      }
+      _sf_t_assign_end = _sf_clock::now();
+
+      if (_tt_syncfn_profile_enabled) {
+        std::fprintf(
+            stderr,
+            "[xla-syncfn] total=%lldus | exec=%lld wrap=%lld assign=%lld | "
+            "sharded=%d n_results=%zu\n",
+            static_cast<long long>(_sf_us(_sf_t_assign_end - _sf_t_start)),
+            static_cast<long long>(_sf_us(_sf_t_exec_end - _sf_t_exec_start)),
+            static_cast<long long>(_sf_us(_sf_t_wrap_end - _sf_t_exec_end)),
+            static_cast<long long>(_sf_us(_sf_t_assign_end - _sf_t_wrap_end)),
+            _sf_sharded ? 1 : 0, _sf_n_results);
+        std::fflush(stderr);
       }
     } catch (...) {
       // There are two paths of discovery of an exception happening on an

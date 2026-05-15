@@ -1,7 +1,12 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 #include "absl/strings/ascii.h"
@@ -267,6 +272,53 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
   metrics::TimedSection timed(TransferToDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferToDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
+
+  static bool _tt_xfer_enabled = []() {
+    const char *v = std::getenv("TT_PROFILE");
+    return v && std::atoi(v) != 0;
+  }();
+  static std::mutex _tt_xfer_mu;
+  static std::uint64_t _tt_xfer_calls = 0;
+  static std::uint64_t _tt_xfer_tensors = 0;
+  static std::unordered_map<std::string, std::uint64_t> _tt_xfer_shape_counts;
+  if (_tt_xfer_enabled) {
+    std::lock_guard<std::mutex> lk(_tt_xfer_mu);
+    ++_tt_xfer_calls;
+    _tt_xfer_tensors += tensors.size();
+    for (auto& tensor : tensors) {
+      std::ostringstream key_ss;
+      key_ss << "shape=[";
+      const auto& dims = tensor->dimensions();
+      for (size_t i = 0; i < dims.size(); ++i) {
+        if (i) key_ss << ",";
+        key_ss << dims[i];
+      }
+      key_ss << "] dtype=" << static_cast<int>(tensor->primitive_type());
+      _tt_xfer_shape_counts[key_ss.str()] += 1;
+    }
+    // Periodic dump
+    if (_tt_xfer_calls % 500 == 0) {
+      std::fprintf(stderr,
+                   "[xla-transfer] calls=%llu tensors=%llu unique_shapes=%zu\n",
+                   static_cast<unsigned long long>(_tt_xfer_calls),
+                   static_cast<unsigned long long>(_tt_xfer_tensors),
+                   _tt_xfer_shape_counts.size());
+      std::vector<std::pair<std::uint64_t, std::string>> sorted;
+      sorted.reserve(_tt_xfer_shape_counts.size());
+      for (auto& kv : _tt_xfer_shape_counts) {
+        sorted.emplace_back(kv.second, kv.first);
+      }
+      std::sort(sorted.begin(), sorted.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (auto& kv : sorted) {
+        std::fprintf(stderr, "  %6llu  %s\n",
+                     static_cast<unsigned long long>(kv.first),
+                     kv.second.c_str());
+      }
+      std::fflush(stderr);
+    }
+  }
+
   std::vector<ComputationClient::DataPtr> datas;
   datas.reserve(tensors.size());
   int64_t total_size = 0;
