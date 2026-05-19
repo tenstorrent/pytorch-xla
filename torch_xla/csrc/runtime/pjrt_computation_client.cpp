@@ -1,7 +1,6 @@
 #include "torch_xla/csrc/runtime/pjrt_computation_client.h"
 
 #include <algorithm>
-#include <iostream>
 #include <stdexcept>
 #include <vector>
 
@@ -345,28 +344,16 @@ std::shared_ptr<PjRtComputationClient::PjRtData>
 PjRtComputationClient::ReplicateShardedData(
     const ComputationClient::DataPtr& handle) {
   if (auto unsharded_data = std::dynamic_pointer_cast<PjRtData>(handle)) {
-    std::cout << "[PJRT] ReplicateShardedData: handle is already unsharded "
-                 "PjRtData -- no compile needed" << std::endl;
     return unsharded_data;
   } else if (auto sharded_data =
                  std::dynamic_pointer_cast<PjRtShardedData>(handle)) {
     XLA_COUNTER("ReplicateShardedData", 1);
     TF_VLOG(1) << "ReplicateShardedData (handle=" << sharded_data->GetHandle()
                << ", shape=" << sharded_data->shape() << ")";
-    std::cout << "[PJRT] ReplicateShardedData: ENTER handle="
-              << sharded_data->GetHandle()
-              << " shape=" << sharded_data->shape().ToString()
-              << " sharding_type=" << sharded_data->GetSharding().type()
-              << std::endl;
     if (sharded_data->GetSharding().type() == xla::OpSharding::REPLICATED) {
-      std::cout << "[PJRT] ReplicateShardedData: REPLICATED fast-path "
-                   "(returning shards[0], NO compile)" << std::endl;
       // Data is replicated, return the first shard
       return sharded_data->shards[0];
     }
-    std::cout << "[PJRT] ReplicateShardedData: SLOW PATH -- building identity "
-                 "HLO and calling Compile() (no cache on this path!)"
-              << std::endl;
     xla::XlaBuilder builder("ReplicateShardedData");
     xla::Shape shape = sharded_data->shape();
     builder.SetSharding(sharded_data->GetSharding());
@@ -528,8 +515,6 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
-  std::cout << "[PJRT] TransferFromDevice: handles=" << handles.size()
-            << std::endl;
   std::vector<xla::PjRtFuture<>> futures;
   futures.reserve(handles.size());
   std::vector<xla::Literal> literals;
@@ -543,35 +528,12 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
       const xla::OpSharding& sharding = sharded_data->GetSharding();
       const bool is_other = sharding.type() == xla::OpSharding::OTHER;
       const bool no_last_tile_dims = sharding.last_tile_dims().empty();
-      const bool has_iota = !sharding.iota_reshape_dims().empty();
-      std::cout << "[PJRT] TransferFromDevice: sharded handle"
-                << " type=" << sharding.type() << " (OTHER=" << is_other << ")"
-                << " last_tile_dims_size=" << sharding.last_tile_dims().size()
-                << " iota_reshape_dims_size="
-                << sharding.iota_reshape_dims().size()
-                << " replicate_on_last_tile_dim="
-                << sharding.replicate_on_last_tile_dim()
-                << " tile_assignment_devices_size="
-                << sharding.tile_assignment_devices().size()
-                << " shape=" << sharded_data->shape().ToString() << std::endl;
       if (is_other && no_last_tile_dims) {
-        std::cout << "[PJRT] TransferFromDevice: HOST-STITCH path for shape="
-                  << sharded_data->shape().ToString()
-                  << " (iota_resolved=" << (has_iota ? "YES" : "NO") << ")"
-                  << std::endl;
         xla::Literal& global_lit =
             StitchShardedHandle(sharded_data, literals);
         total_size += global_lit.size_bytes();
         continue;
       }
-      std::cout << "[PJRT] TransferFromDevice: FALLBACK to "
-                   "ReplicateShardedData reason="
-                << (!is_other ? "type_not_OTHER " : "")
-                << (!no_last_tile_dims ? "has_last_tile_dims " : "")
-                << std::endl;
-    } else {
-      std::cout << "[PJRT] TransferFromDevice: unsharded handle (PjRtData)"
-                << std::endl;
     }
     // Fallback: unsharded data, REPLICATED, or unsupported sharding shapes.
     std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
@@ -602,10 +564,6 @@ xla::Literal& PjRtComputationClient::StitchShardedHandle(
   const auto& shards = sharded_data->shards;
   XLA_CHECK(!shards.empty()) << "Sharded data has no shards";
 
-  std::cout << "[PJRT] StitchShardedHandle: ENTER global_shape="
-            << sharded_data->shape().ToString() << " num_shards="
-            << shards.size() << std::endl;
-
   // 1. Kick off all per-shard host transfers in parallel.
   std::vector<xla::Literal> shard_literals;
   std::vector<xla::PjRtFuture<>> shard_futures;
@@ -617,15 +575,11 @@ xla::Literal& PjRtComputationClient::StitchShardedHandle(
     shard_literals.emplace_back(host_output_shape(shard->buffer.get()));
     shard_futures.push_back(shard->buffer->ToLiteral(&shard_literals.back()));
   }
-  std::cout << "[PJRT] StitchShardedHandle: kicked off " << shards.size()
-            << " parallel ToLiteral reads, awaiting" << std::endl;
   for (auto& future : shard_futures) {
     absl::Status status = future.Await();
     XLA_CHECK_OK(status) << "Failed to await shard ToLiteral in "
                          << __FUNCTION__;
   }
-  std::cout << "[PJRT] StitchShardedHandle: all shard reads complete"
-            << std::endl;
 
   // 2. Allocate the global literal with element_type and layout copied from
   //    a shard buffer (layouts are dim-size independent, so reusing is safe).
@@ -651,19 +605,6 @@ xla::Literal& PjRtComputationClient::StitchShardedHandle(
     shard_shape[d] = global_dims[d] / tile_dims[d] +
                      (global_dims[d] % tile_dims[d] != 0);
   }
-  {
-    std::cout << "[PJRT] StitchShardedHandle: tile_dims=[";
-    for (int d = 0; d < (int)tile_dims.size(); ++d) {
-      std::cout << tile_dims[d] << (d + 1 < (int)tile_dims.size() ? "," : "");
-    }
-    std::cout << "] replicate_last=" << replicate_last
-              << " replicate_factor=" << replicate_factor
-              << " shard_shape=[";
-    for (int d = 0; d < n_dims; ++d) {
-      std::cout << shard_shape[d] << (d + 1 < n_dims ? "," : "");
-    }
-    std::cout << "]" << std::endl;
-  }
 
   // 4. Map global device ordinal → index into `shards`. shards[i]->device()
   //    is the canonical source of truth here; tile_assignment_devices(i)
@@ -687,8 +628,6 @@ xla::Literal& PjRtComputationClient::StitchShardedHandle(
                            sharding.iota_reshape_dims(),
                            sharding.iota_transpose_perm());
     tile_assignment_devices.assign(ta.array().begin(), ta.array().end());
-    std::cout << "[PJRT] StitchShardedHandle: resolved iota tile_assignment to "
-              << tile_assignment_devices.size() << " devices" << std::endl;
   } else {
     tile_assignment_devices.assign(sharding.tile_assignment_devices().begin(),
                                    sharding.tile_assignment_devices().end());
@@ -737,26 +676,8 @@ xla::Literal& PjRtComputationClient::StitchShardedHandle(
     XLA_CHECK_OK(status) << "CopySliceFrom failed for tile " << t
                          << " (shard_idx=" << shard_idx
                          << ", global_ord=" << global_ord << ")";
-
-    std::cout << "[PJRT] StitchShardedHandle: tile " << t << "/" << total_tiles
-              << " coord=[";
-    for (int d = 0; d < n_dims; ++d) {
-      std::cout << tile_coord[d] << (d + 1 < n_dims ? "," : "");
-    }
-    std::cout << "] from shard_idx=" << shard_idx
-              << " (global_ord=" << global_ord << ") dest_base=[";
-    for (int d = 0; d < n_dims; ++d) {
-      std::cout << dest_base[d] << (d + 1 < n_dims ? "," : "");
-    }
-    std::cout << "] copy_size=[";
-    for (int d = 0; d < n_dims; ++d) {
-      std::cout << copy_size[d] << (d + 1 < n_dims ? "," : "");
-    }
-    std::cout << "]" << std::endl;
   }
 
-  std::cout << "[PJRT] StitchShardedHandle: DONE bytes="
-            << global_lit.size_bytes() << std::endl;
   return global_lit;
 }
 
@@ -769,14 +690,6 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
   metrics::TimedSection timed(metrics_fn());
   tsl::profiler::TraceMe activity("PjRtComputationClient::Compile",
                                   tsl::profiler::TraceMeLevel::kInfo);
-  // This entry point has NO cache -- every caller pays a fresh compile.
-  // Useful to see which high-level path triggered us.
-  for (const auto& inst : instances) {
-    std::cout << "[PJRT] Compile: name=" << inst.computation.name()
-              << " device=" << inst.compilation_device
-              << " is_sharded=" << inst.is_sharded
-              << " eager_mode=" << inst.eager_mode << std::endl;
-  }
   std::vector<ComputationClient::ComputationPtr> computations;
   static bool enable_cm_in_mp =
       runtime::sys_util::GetEnvBool("ENABLE_COLLECTIVE_MATMUL_IN_MP", false);

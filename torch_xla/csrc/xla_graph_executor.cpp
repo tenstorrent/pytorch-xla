@@ -17,7 +17,6 @@
 #include <exception>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -635,28 +634,13 @@ XLAGraphExecutor::SyncTensorCollection XLAGraphExecutor::CollectSyncTensors(
   // The force_ltc_data controls aliasing compilation, so effectively the same
   // graph with on/off force_ltc_data should not match, hash wise.
   coll.hash = torch::lazy::MHash(config.force_ltc_data);
-  std::cout << "[CACHE] CollectSyncTensors device=" << coll.device.toString()
-            << " tensors=" << tensors.size()
-            << " force_ltc_data=" << config.force_ltc_data
-            << " hash_after_force_ltc_data="
-            << torch::lazy::HashToString(coll.hash) << std::endl;
   // Ensure that the compilation environment and git revisions are reflected
   // in the hash, so that different versions of the code can produce different
   // hashes for the same graph.
-  auto compilation_env_hash =
-      runtime::GetComputationClientOrDie()->HashCompilationEnv();
-  auto torch_gitrev_hash = torch::lazy::StringHash(TORCH_GITREV);
-  auto xla_gitrev_hash = torch::lazy::StringHash(XLA_GITREV);
-  std::cout << "[CACHE]   HashCompilationEnv="
-            << torch::lazy::HashToString(compilation_env_hash)
-            << " TORCH_GITREV(" << TORCH_GITREV
-            << ")=" << torch::lazy::HashToString(torch_gitrev_hash)
-            << " XLA_GITREV(" << XLA_GITREV
-            << ")=" << torch::lazy::HashToString(xla_gitrev_hash) << std::endl;
-  MergeHash({compilation_env_hash, torch_gitrev_hash, xla_gitrev_hash},
+  MergeHash({runtime::GetComputationClientOrDie()->HashCompilationEnv(),
+             torch::lazy::StringHash(TORCH_GITREV),
+             torch::lazy::StringHash(XLA_GITREV)},
             &coll.hash);
-  std::cout << "[CACHE]   hash_after_env_and_gitrev="
-            << torch::lazy::HashToString(coll.hash) << std::endl;
   coll.config = config;
   coll.device = *unique_device;
   coll.indices.reserve(tensors.size());
@@ -1226,15 +1210,10 @@ XLAGraphExecutor::ComputationCache::TypePtr
 XLAGraphExecutor::LookupCachedCompile(const torch::lazy::hash_t& hash) {
   ComputationCache::TypePtr cached_computation =
       GetComputationCache()->Get(hash);
-  size_t in_mem = GetComputationCache()->GetNumInMemoryCachedGraph();
   if (cached_computation == nullptr) {
-    std::cout << "[CACHE] LOOKUP MISS hash=" << torch::lazy::HashToString(hash)
-              << " in_memory_cached_graphs=" << in_mem << std::endl;
     TORCH_LAZY_COUNTER("UncachedCompile", 1);
     return nullptr;
   }
-  std::cout << "[CACHE] LOOKUP HIT  hash=" << torch::lazy::HashToString(hash)
-            << " in_memory_cached_graphs=" << in_mem << std::endl;
   TF_VLOG(5) << "Graph hash: " << torch::lazy::HashToString(hash);
   TORCH_LAZY_COUNTER("CachedCompile", 1);
   return cached_computation;
@@ -1557,53 +1536,26 @@ XLAGraphExecutor::SyncTensorsGraphInternal(
   ExtractIRAndPrepareXlaData_(tensors, coll.config, coll.indices, ir_values,
                               tensor_data_vec);
   PostOrderData po_data = RunPostOrder(ir_values, &coll);
-  auto param_seq_hash = torch::lazy::Hash(po_data.parameter_sequence);
-  std::cout << "[CACHE] SyncTensorsGraphInternal param_seq_size="
-            << po_data.parameter_sequence.size() << " post_order_size="
-            << po_data.post_order.size()
-            << " parameter_sequence_hash="
-            << torch::lazy::HashToString(param_seq_hash) << std::endl;
-  MergeHash(param_seq_hash, &coll.hash);
-  std::cout << "[CACHE]   hash_after_param_seq="
-            << torch::lazy::HashToString(coll.hash) << std::endl;
+  MergeHash(torch::lazy::Hash(po_data.parameter_sequence), &coll.hash);
 
   std::vector<size_t> buffer_donor_indices =
       GetBufferDonors(*tensors, coll, po_data.parameters_data);
   if (buffer_donor_indices.size() > 0) {
     // Do not include hash on a empty vector.
-    auto donor_hash = torch::lazy::Hash(buffer_donor_indices);
-    std::cout << "[CACHE]   buffer_donor_indices_count="
-              << buffer_donor_indices.size()
-              << " buffer_donor_hash=" << torch::lazy::HashToString(donor_hash)
-              << std::endl;
-    MergeHash(donor_hash, &coll.hash);
-    std::cout << "[CACHE]   hash_after_buffer_donors="
-              << torch::lazy::HashToString(coll.hash) << std::endl;
-  } else {
-    std::cout << "[CACHE]   buffer_donor_indices empty (not mixed in)"
-              << std::endl;
+    MergeHash(torch::lazy::Hash(buffer_donor_indices), &coll.hash);
   }
   {
     // Auto-sharding configs
-    bool auto_sharding = ShardingUtil::GetAutoSharding();
-    std::string auto_spmd_mesh =
-        runtime::sys_util::GetEnvString("XLA_AUTO_SPMD_MESH", "");
-    auto auto_sharding_hash = torch::lazy::MHash(auto_sharding);
-    auto spmd_mesh_hash = torch::lazy::StringHash(auto_spmd_mesh.c_str());
-    std::cout << "[CACHE]   auto_sharding=" << auto_sharding
-              << " auto_sharding_hash="
-              << torch::lazy::HashToString(auto_sharding_hash)
-              << " XLA_AUTO_SPMD_MESH=\"" << auto_spmd_mesh
-              << "\" spmd_mesh_hash="
-              << torch::lazy::HashToString(spmd_mesh_hash) << std::endl;
-    MergeHash({auto_sharding_hash, spmd_mesh_hash}, &coll.hash);
+    MergeHash({torch::lazy::MHash(ShardingUtil::GetAutoSharding()),
+               torch::lazy::StringHash(
+                   runtime::sys_util::GetEnvString("XLA_AUTO_SPMD_MESH", "")
+                       .c_str())},
+              &coll.hash);
   }
 
   DebugUtil::SaveGraphHash(coll.hash);
   TF_VLOG(4) << "Parameter sequence graph hash "
              << torch::lazy::HashToString(coll.hash);
-  std::cout << "[CACHE] final_graph_hash="
-            << torch::lazy::HashToString(coll.hash) << std::endl;
 
   std::pair<bool, std::shared_ptr<XLAGraphExecutor::Async>> cache_res =
       TryRunCachedSync(tensors, &coll, &po_data, tensor_data_vec,
@@ -1620,10 +1572,6 @@ XLAGraphExecutor::SyncTensorsGraphInternal(
   auto cached_computation = std::make_shared<CachedComputation>(
       std::move(compile_result.computation), compile_result.is_sharded);
   GetComputationCache()->Add(coll.hash, cached_computation);
-  std::cout << "[CACHE] INSERT     hash=" << torch::lazy::HashToString(coll.hash)
-            << " is_sharded=" << compile_result.is_sharded
-            << " in_memory_cached_graphs="
-            << GetComputationCache()->GetNumInMemoryCachedGraph() << std::endl;
 
   if (warm_up_cache_only) {
     return nullptr;
