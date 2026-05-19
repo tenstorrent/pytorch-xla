@@ -262,7 +262,10 @@ cc_library(
 
 ptxla_cc_library(
     name = "init_python_bindings",
-    srcs = ["init_python_bindings.cpp"],
+    srcs = [
+        "init_python_bindings.cpp",
+        "jit_type_infer_shim.cpp",
+    ],
     deps = [
         ":device",
         ":dtype",
