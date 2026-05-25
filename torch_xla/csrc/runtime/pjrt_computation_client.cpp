@@ -509,6 +509,19 @@ std::shared_ptr<xla::PjRtBuffer> PjRtComputationClient::GetPjRtBuffer(
   }
 }
 
+std::vector<int64_t> ComputeShardOffset(int64_t shard_idx, absl::Span<const int64_t> tile_dim, absl::Span<const int64_t> shard_dims){
+  // 
+  int64_t rank = tile_dim.size();
+  std::vector<int64_t> offset(rank, 0);
+  int64_t remainder = shard_idx;
+  for(int j = rank-1; j>=0; --j){
+    int64_t n_j = remainder % tile_dim[j];
+    remainder /= tile_dim[j];
+    offset[j] = n_j * shard_dims[j];
+  }
+  return offset;
+}
+
 std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
@@ -519,21 +532,57 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   std::vector<xla::Literal> literals;
   literals.reserve(handles.size());
   int64_t total_size = 0;
+ 
   for (auto handle : handles) {
-    // Use XLA replication to reassemble the sharded data. If input handle
-    // is not sharded, then it is a no-op.
-    std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
-    XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
-    XLA_CHECK(pjrt_data->buffer != nullptr)
-        << "PjRt buffer is null in " << __FUNCTION__;
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle); sharded && sharded->GetSharding().type() == xla::OpSharding::OTHER){ // got sharded and is OTHER sharding
+      std::vector<xla::PjRtFuture<>> futures_local_shards;
+      futures_local_shards.reserve(sharded->shards.size());
+      std::vector<xla::Literal> literals_local_shards;
+      literals_local_shards.reserve(sharded->shards.size());
 
-    xla::Literal& literal =
-        literals.emplace_back(host_output_shape(pjrt_data->buffer.get()));
-    futures.push_back(pjrt_data->buffer->ToLiteral(&literal));
+      for (auto& shard : sharded->shards){ // pull each local shard to the host in parallel
+        xla::Literal& literal =
+            literals_local_shards.emplace_back(host_output_shape(shard->buffer.get()));
+        futures_local_shards.push_back(shard->buffer->ToLiteral(&literal));
+      }
 
-    total_size += literal.size_bytes();
+      for (auto& future : futures_local_shards){ // wait for all local shards to be transferred to the host
+        absl::Status status = future.Await();
+        XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
+                            << __FUNCTION__;
+      }
+
+      xla::Literal& global_literal = // global literal to store the stitched result
+          literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
+      
+      auto tile_dim = sharded->GetSharding().tile_assignment_dimensions(); // remember to account for replicate_on_last_dim, without it this is wrong if there is replicate
+      auto rank = tile_dim.size();
+
+      for (int64_t i = 0; i < literals_local_shards.size(); ++i){
+        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[i], 
+                                                            /*src_base*/ std::vector<int64_t>(rank, 0), // just {0...0}
+                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[i].shape().dimensions()),
+                                                            /*copy_size*/ literals_local_shards[i].shape().dimensions());
+        XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
+                            << __FUNCTION__;
+      }
+      total_size += global_literal.size_bytes();
+    } 
+    else {
+      // fallback to legacy path
+      std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
+      XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
+      XLA_CHECK(pjrt_data->buffer != nullptr)
+          << "PjRt buffer is null in " << __FUNCTION__;
+      xla::Literal& literal =
+          literals.emplace_back(host_output_shape(pjrt_data->buffer.get()));
+      futures.push_back(pjrt_data->buffer->ToLiteral(&literal));
+
+      total_size += literal.size_bytes();
+    }
   }
-  for (auto& future : futures) {
+  
+  for (auto& future : futures) { // just waiting for all handles to be transferred to the host
     absl::Status status = future.Await();
     XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
                          << __FUNCTION__;
