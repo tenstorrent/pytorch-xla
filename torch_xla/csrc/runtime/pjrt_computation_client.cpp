@@ -522,6 +522,20 @@ std::vector<int64_t> ComputeShardOffset(int64_t shard_idx, absl::Span<const int6
   return offset;
 }
 
+std::vector<int64_t> ComputeTileAssignmentDevices(const xla::OpSharding& sharding){
+  if (!sharding.iota_reshape_dims().empty()) {
+    // V2 iota form
+    xla::TileAssignment tile_assignment(
+        sharding.tile_assignment_dimensions(),
+        sharding.iota_reshape_dims(),
+        sharding.iota_transpose_perm());
+    return std::vector<int64_t>(tile_assignment.array().begin(), tile_assignment.array().end());
+  }
+  // V1 explicit form
+  return std::vector<int64_t>(sharding.tile_assignment_devices().begin(),
+                              sharding.tile_assignment_devices().end());
+}
+
 std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
@@ -555,14 +569,16 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
       xla::Literal& global_literal = // global literal to store the stitched result
           literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
       
-      auto tile_dim = sharded->GetSharding().tile_assignment_dimensions(); // remember to account for replicate_on_last_dim, without it this is wrong if there is replicate
+      auto op_sharding = sharded->GetSharding();
+      auto tile_dim = op_sharding.tile_assignment_dimensions(); // remember to account for replicate_on_last_dim, without it this is wrong if there is replicate
       auto rank = tile_dim.size();
-
+      auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
+      
       for (int64_t i = 0; i < literals_local_shards.size(); ++i){
-        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[i], 
+        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[tile_devices[i]], 
                                                             /*src_base*/ std::vector<int64_t>(rank, 0), // just {0...0}
-                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[i].shape().dimensions()),
-                                                            /*copy_size*/ literals_local_shards[i].shape().dimensions());
+                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[tile_devices[i]].shape().dimensions()),
+                                                            /*copy_size*/ literals_local_shards[tile_devices[i]].shape().dimensions());
         XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
                             << __FUNCTION__;
       }
