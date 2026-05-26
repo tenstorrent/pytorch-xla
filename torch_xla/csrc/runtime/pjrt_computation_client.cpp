@@ -524,7 +524,7 @@ std::vector<int64_t> ComputeShardOffset(int64_t shard_idx, absl::Span<const int6
 
 std::vector<int64_t> ComputeTileAssignmentDevices(const xla::OpSharding& sharding){
   if (!sharding.iota_reshape_dims().empty()) {
-    // V2 iota form
+    // V2 iota form (common case)
     xla::TileAssignment tile_assignment(
         sharding.tile_assignment_dimensions(),
         sharding.iota_reshape_dims(),
@@ -570,15 +570,22 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
           literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
       
       auto op_sharding = sharded->GetSharding();
-      auto tile_dim = op_sharding.tile_assignment_dimensions(); // remember to account for replicate_on_last_dim, without it this is wrong if there is replicate
+      auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
+      auto tile_dim = op_sharding.tile_assignment_dimensions();
+      int64_t replicated_dim = 1;
+      if (replicate_on_last_dim){
+        replicated_dim = tile_dim.Get(tile_dim.size() - 1);
+        tile_dim.RemoveLast();
+      }
       auto rank = tile_dim.size();
       auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
       
-      for (int64_t i = 0; i < literals_local_shards.size(); ++i){
-        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[tile_devices[i]], 
+      for (int64_t i = 0; i < literals_local_shards.size()/replicated_dim; ++i){
+        auto tile_pos = tile_devices[i*replicated_dim];
+        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[tile_pos], 
                                                             /*src_base*/ std::vector<int64_t>(rank, 0), // just {0...0}
-                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[tile_devices[i]].shape().dimensions()),
-                                                            /*copy_size*/ literals_local_shards[tile_devices[i]].shape().dimensions());
+                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[tile_pos].shape().dimensions()),
+                                                            /*copy_size*/ literals_local_shards[tile_pos].shape().dimensions());
         XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
                             << __FUNCTION__;
       }
