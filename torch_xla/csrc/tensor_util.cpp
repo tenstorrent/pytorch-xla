@@ -21,6 +21,7 @@
 #include "torch_xla/csrc/runtime/computation_client.h"
 #include "torch_xla/csrc/runtime/debug_macros.h"
 #include "torch_xla/csrc/runtime/runtime.h"
+#include "torch_xla/csrc/xla_sharding_util.h"
 #include "torch_xla/csrc/runtime/sys_util.h"
 #include "torch_xla/csrc/runtime/tf_logging.h"
 #include "torch_xla/csrc/runtime/util.h"
@@ -908,9 +909,41 @@ std::vector<xla::Literal> ReleaseGilAndTransferData(
   if (release_gil && Py_IsInitialized() && PyGILState_Check()) {
     save = PyEval_SaveThread();
   }
-  std::vector<xla::Literal> literals =
-      runtime::GetComputationClientOrDie()->TransferFromDevice(
-          UnwrapXlaData(xla_data));
+
+  // Partition sharded vs non-sharded so the latter keeps its batched, async
+  // PJRT path; sharded handles reassemble on host via FetchShardedTensor +
+  // UnshardTensor (no device-side computation), then re-wrap into a single
+  // global literal so callers can keep using the literal interface.
+  auto unwrapped = UnwrapXlaData(xla_data);
+  std::vector<runtime::ComputationClient::DataPtr> plain_data;
+  std::vector<size_t> plain_idx;
+  std::vector<size_t> sharded_idx;
+  plain_data.reserve(unwrapped.size());
+  for (size_t i = 0; i < unwrapped.size(); ++i) {
+    if (unwrapped[i]->HasSharding()) {
+      sharded_idx.push_back(i);
+    } else {
+      plain_idx.push_back(i);
+      plain_data.push_back(unwrapped[i]);
+    }
+  }
+
+  std::vector<xla::Literal> literals(unwrapped.size());
+  if (!plain_data.empty()) {
+    auto plain_literals =
+        runtime::GetComputationClientOrDie()->TransferFromDevice(plain_data);
+    XLA_CHECK_EQ(plain_literals.size(), plain_idx.size());
+    for (size_t i = 0; i < plain_literals.size(); ++i) {
+      literals[plain_idx[i]] = std::move(plain_literals[i]);
+    }
+  }
+  for (size_t i : sharded_idx) {
+    ShardedHostTensor sharded = ShardingUtil::FetchShardedTensor(unwrapped[i]);
+    at::Tensor global = ShardingUtil::UnshardTensor(sharded);
+    literals[i] = GetTensorLiteral(global, &unwrapped[i]->shape(),
+                                   /*device=*/nullptr);
+  }
+
   if (save) {
     PyEval_RestoreThread(save);
   }
@@ -921,17 +954,51 @@ std::vector<xla::Literal> ReleaseGilAndTransferData(
 std::vector<at::Tensor> XlaDataToTensors(
     absl::Span<const torch::lazy::BackendDataPtr> xla_data,
     absl::Span<const at::ScalarType> dest_element_type) {
-  std::vector<xla::Literal> literals = ReleaseGilAndTransferData(xla_data);
-  std::vector<at::Tensor> tensors(literals.size());
-  absl::BlockingCounter counter(literals.size());
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    auto copy_fn = [&, i]() {
-      tensors[i] = MakeTensorFromXlaLiteral(literals[i], dest_element_type[i]);
-      counter.DecrementCount();
-    };
-    thread::Schedule(std::move(copy_fn));
+  std::vector<at::Tensor> tensors(xla_data.size());
+
+  // Partition handles into sharded vs not. Non-sharded follow the existing
+  // batched `TransferFromDevice` + parallel literal→tensor path. Sharded
+  // handles use the host-side unshard (FetchShardedTensor + UnshardTensor),
+  // avoiding the device-side replication round trip.
+  std::vector<torch::lazy::BackendDataPtr> plain_data;
+  std::vector<at::ScalarType> plain_types;
+  std::vector<size_t> plain_idx;
+  std::vector<size_t> sharded_idx;
+  plain_data.reserve(xla_data.size());
+  plain_types.reserve(xla_data.size());
+  for (size_t i = 0; i < xla_data.size(); ++i) {
+    if (UnwrapXlaData(xla_data[i])->HasSharding()) {
+      sharded_idx.push_back(i);
+    } else {
+      plain_idx.push_back(i);
+      plain_data.push_back(xla_data[i]);
+      plain_types.push_back(dest_element_type[i]);
+    }
   }
-  counter.Wait();
+
+  if (!plain_data.empty()) {
+    std::vector<xla::Literal> literals = ReleaseGilAndTransferData(plain_data);
+    absl::BlockingCounter counter(literals.size());
+    for (size_t i = 0; i < literals.size(); ++i) {
+      auto copy_fn = [&, i]() {
+        tensors[plain_idx[i]] =
+            MakeTensorFromXlaLiteral(literals[i], plain_types[i]);
+        counter.DecrementCount();
+      };
+      thread::Schedule(std::move(copy_fn));
+    }
+    counter.Wait();
+  }
+
+  for (size_t i : sharded_idx) {
+    ShardedHostTensor sharded =
+        ShardingUtil::FetchShardedTensor(UnwrapXlaData(xla_data[i]));
+    at::Tensor global = ShardingUtil::UnshardTensor(sharded);
+    if (global.scalar_type() != dest_element_type[i]) {
+      global = global.to(dest_element_type[i]);
+    }
+    tensors[i] = std::move(global);
+  }
   return tensors;
 }
 

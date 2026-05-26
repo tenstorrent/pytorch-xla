@@ -60,13 +60,15 @@ class PjRtComputationClient : public ComputationClient {
   // Reshard and return data sharded by `sharding` spec. This is a no-op if
   // the input sharding spec is identical to the target `sharding` sharding
   // spec.
-  // TODO(yeounoh) replace ReplicateShardedData with this.
   std::vector<DataPtr> ReshardData(
       absl::Span<const DataPtr> handles,
       absl::Span<const xla::OpSharding> shardings) override;
 
   std::vector<xla::Literal> TransferFromDevice(
       absl::Span<const DataPtr> handles) override;
+
+  std::vector<xla::Literal> TransferShardsFromDevice(
+      const DataPtr& sharded_handle) override;
 
   std::uintptr_t UnsafeBufferPointer(const DataPtr handle) override;
 
@@ -348,8 +350,6 @@ class PjRtComputationClient : public ComputationClient {
     std::optional<std::vector<xla::OpSharding>> output_shardings_;
   };
 
-  // Use XLA replication to re-assemble the sharded data.
-  std::shared_ptr<PjRtData> ReplicateShardedData(const DataPtr& handle);
 };
 
 }  // namespace runtime

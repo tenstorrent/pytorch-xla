@@ -15,6 +15,16 @@
 
 namespace torch_xla {
 
+// Host-side representation of a sharded tensor: the per-device shards along
+// with the sharding spec and devices needed to reassemble them. Mirror of
+// `runtime::PjRtComputationClient::PjRtShardedData`, but with host tensors
+// instead of device buffers. Consumed by `ShardingUtil::UnshardTensor`.
+struct ShardedHostTensor {
+  std::vector<at::Tensor> shards;
+  std::vector<std::string> devices;
+  XLATensor::ShardingSpecPtr spec;
+};
+
 class ShardingUtil {
  public:
   // This maps to `torch_xla.distributed.spmd.ShardingType` enum type.
@@ -95,6 +105,22 @@ class ShardingUtil {
   static std::vector<at::Tensor> ShardTensor(
       const at::Tensor& tensor, const XLATensor::ShardingSpecPtr shardings,
       const std::vector<std::string>& devices, bool padded = true);
+
+  // Inverse of `ShardTensor`. Reassembles a global tensor on host from the
+  // per-device shards in `sharded`, using its sharding spec. Shards are
+  // expected to be in 1:1 correspondence with `sharded.devices`, padded to
+  // `GetShardShape(spec)`. Any padding is stripped via the slice extents
+  // returned by `GetShardReplicaAndIndicesForDevices`. Non-primary replicas
+  // (`replica_id != 0`) are skipped to avoid redundant writes.
+  static at::Tensor UnshardTensor(const ShardedHostTensor& sharded);
+
+  // Materialises a `PjRtShardedData` (or compatible sharded `DataPtr`) onto
+  // the host as a `ShardedHostTensor`. Each shard is transferred individually
+  // — no device-side stitching computation is run. Intended to be paired
+  // with `UnshardTensor` (or consumed shard-by-shard by callers like
+  // `_get_local_shards`).
+  static ShardedHostTensor FetchShardedTensor(
+      const runtime::ComputationClient::DataPtr& handle);
 
   // Retrieve output sharding of a given XLA computation. ShardingSpec::shape
   // is always on virtual SPMD device.

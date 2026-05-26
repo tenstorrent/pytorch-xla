@@ -561,6 +561,126 @@ std::vector<at::Tensor> ShardingUtil::ShardTensor(
   return shards;
 }
 
+at::Tensor ShardingUtil::UnshardTensor(const ShardedHostTensor& sharded) {
+  XLA_CHECK(!sharded.shards.empty());
+  XLA_CHECK_EQ(sharded.shards.size(), sharded.devices.size());
+
+  const auto& spec = sharded.spec;
+  xla::OpSharding sharding;
+  bool minibatch = false;
+  if (spec != nullptr) {
+    sharding = spec->sharding;
+    minibatch = spec->minibatch;
+  }
+  TF_VLOG(5) << "UnshardTensor with sharding type(" << sharding.type()
+             << ")... and minibatch = " << minibatch << std::endl;
+
+  // REPLICATED / UNKNOWN / null spec: ShardTensor produced identical copies,
+  // so any shard *is* the global tensor.
+  if (spec == nullptr || is_noop_sharding(sharding)) {
+    return sharded.shards[0];
+  }
+
+  XLA_CHECK_EQ(sharding.type(), xla::OpSharding::OTHER)
+      << "Unsupported OpSharding type for UnshardTensor: " << sharding.type();
+
+  auto shard_shape = GetShardShape(spec);
+
+  if (minibatch) {
+    // Minibatch: each host owns its per-host batch, sharded along dim 0
+    // across local devices only. Reassemble to the *per-host* shape — the
+    // cross-host concatenation lives in spec->shape but is not produced here.
+    std::vector<int64_t> per_host_sizes(shard_shape.begin(), shard_shape.end());
+    per_host_sizes[0] = shard_shape[0] * sharded.devices.size();
+    at::Tensor per_host = at::empty(
+        per_host_sizes,
+        sharded.shards[0].options().memory_format(at::MemoryFormat::Contiguous));
+
+    auto indices =
+        GetShardIndicesForMinibatchTensor(shard_shape, sharded.devices);
+    for (size_t i = 0; i < sharded.shards.size(); ++i) {
+      per_host.index_put_(c10::ArrayRef<at::indexing::TensorIndex>(indices[i]),
+                          sharded.shards[i]);
+    }
+    return per_host;
+  }
+
+  // Tiled (non-minibatch): allocate the global output using spec's shape.
+  auto global_dims = spec->shape.dimensions();
+  std::vector<int64_t> global_sizes(global_dims.begin(), global_dims.end());
+
+  // Uneven sharding is not supported: every tiled dim of the global tensor
+  // must divide evenly by its tile dimension. Without this guarantee
+  // ShardTensor pads the shards and UnshardTensor would need to strip that
+  // padding using the slice extents — we explicitly reject that case here
+  // rather than silently round-tripping a padded tensor.
+  auto tile_dims = sharding.tile_assignment_dimensions();
+  for (int d = 0; d < tile_dims.size(); ++d) {
+    if (sharding.replicate_on_last_tile_dim() &&
+        d == static_cast<int>(tile_dims.size()) - 1) {
+      continue;
+    }
+    XLA_CHECK_EQ(global_sizes[d] % tile_dims[d], 0)
+        << "UnshardTensor does not support uneven sharding: global dim " << d
+        << " (size " << global_sizes[d] << ") is not divisible by tile dim "
+        << d << " (size " << tile_dims[d] << ")";
+  }
+
+  at::Tensor global = at::empty(
+      global_sizes,
+      sharded.shards[0].options().memory_format(at::MemoryFormat::Contiguous));
+
+  // For the tiled case, GetShardReplicaAndIndicesForDevices already clamps
+  // each slice's end to the tensor extent, so the slice's (stop - start) per
+  // dim is exactly the unpadded extent — no separate padding metadata needed.
+  auto replica_and_indices = GetShardReplicaAndIndicesForDevices(
+      shard_shape, global_sizes, sharding, sharded.devices);
+
+  for (size_t i = 0; i < sharded.shards.size(); ++i) {
+    const auto& replica_id = replica_and_indices[i].first;
+    const auto& indices = replica_and_indices[i].second;
+    if (replica_id != 0) {
+      // Non-primary replica (partial replication via
+      // `replicate_on_last_tile_dim`); its data duplicates the primary copy.
+      continue;
+    }
+    XLA_CHECK(!indices.empty())
+        << "Empty shard indices for device " << sharded.devices[i];
+    global.index_put_(c10::ArrayRef<at::indexing::TensorIndex>(indices),
+                      sharded.shards[i]);
+  }
+  return global;
+}
+
+ShardedHostTensor ShardingUtil::FetchShardedTensor(
+    const runtime::ComputationClient::DataPtr& handle) {
+  XLA_CHECK(handle != nullptr);
+  XLA_CHECK(handle->HasSharding())
+      << "FetchShardedTensor requires a sharded DataPtr, got "
+      << handle->ToString();
+
+  auto* client = runtime::GetComputationClientOrDie();
+  auto literals = client->TransferShardsFromDevice(handle);
+  auto shard_handles = client->GetDataShards(handle);
+  XLA_CHECK_EQ(literals.size(), shard_handles.size());
+
+  ShardedHostTensor out;
+  out.shards.reserve(literals.size());
+  out.devices.reserve(shard_handles.size());
+  for (size_t i = 0; i < literals.size(); ++i) {
+    auto dtype =
+        MaybeUpcastToHostTorchType(literals[i].shape().element_type());
+    out.shards.push_back(MakeTensorFromXlaLiteral(literals[i], dtype));
+    out.devices.push_back(shard_handles[i]->device());
+  }
+  // PjRtShardedData does not carry the minibatch flag, so the spec returned
+  // here defaults to minibatch=false. Callers that know they're dealing with
+  // minibatch data should construct the spec themselves.
+  out.spec = std::make_shared<XLATensor::ShardingSpec>(handle->GetSharding(),
+                                                       handle->shape());
+  return out;
+}
+
 std::vector<XLATensor::ShardingSpecPtr> ShardingUtil::GetOutputSharding(
     const std::vector<xla::Shape>& output_shapes,
     runtime::ComputationClient::ComputationPtr computation) {

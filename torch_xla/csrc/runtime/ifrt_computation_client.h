@@ -65,6 +65,11 @@ class IfrtComputationClient : public ComputationClient {
   std::vector<xla::Literal> TransferFromDevice(
       absl::Span<const DataPtr> handles) override;
 
+  std::vector<xla::Literal> TransferShardsFromDevice(
+      const DataPtr& sharded_handle) override {
+    XLA_ERROR() << __FUNCTION__ << " not implemented";
+  }
+
   std::uintptr_t UnsafeBufferPointer(const DataPtr handle) override;
 
   std::shared_ptr<xla::PjRtBuffer> GetPjRtBuffer(const DataPtr handle) override;

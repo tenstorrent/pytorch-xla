@@ -321,6 +321,16 @@ class ComputationClient {
   virtual std::vector<xla::Literal> TransferFromDevice(
       absl::Span<const DataPtr> handles) = 0;
 
+  // Transfers each shard of a sharded `DataPtr` to host as an `xla::Literal`,
+  // in the same order as the shards themselves. The result is one literal
+  // per local device — the caller is responsible for reassembling them on
+  // host using the sharding spec (e.g. via `ShardingUtil::UnshardTensor`).
+  // This is the inverse of `TransferShardsToDevice` and bypasses the
+  // device-side stitching performed by the legacy `TransferFromDevice` on
+  // sharded data.
+  virtual std::vector<xla::Literal> TransferShardsFromDevice(
+      const DataPtr& sharded_handle) = 0;
+
   virtual std::uintptr_t UnsafeBufferPointer(const DataPtr handle) = 0;
 
   virtual std::shared_ptr<xla::PjRtBuffer> GetPjRtBuffer(
