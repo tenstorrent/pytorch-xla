@@ -510,7 +510,7 @@ std::shared_ptr<xla::PjRtBuffer> PjRtComputationClient::GetPjRtBuffer(
 }
 
 std::vector<int64_t> ComputeShardOffset(int64_t shard_idx, absl::Span<const int64_t> tile_dim, absl::Span<const int64_t> shard_dims){
-  // 
+  // Compute the offset of the shard in the global tensor
   int64_t rank = tile_dim.size();
   std::vector<int64_t> offset(rank, 0);
   int64_t remainder = shard_idx;
@@ -536,6 +536,8 @@ std::vector<int64_t> ComputeTileAssignmentDevices(const xla::OpSharding& shardin
                               sharding.tile_assignment_devices().end());
 }
 
+// struct for reconstructing the global tensor from local shards
+// from global_literals[start] with size tiles
 struct TilePosition {
   int64_t start;
   int64_t size;
