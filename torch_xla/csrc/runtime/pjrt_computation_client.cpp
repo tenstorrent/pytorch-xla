@@ -536,80 +536,114 @@ std::vector<int64_t> ComputeTileAssignmentDevices(const xla::OpSharding& shardin
                               sharding.tile_assignment_devices().end());
 }
 
+struct TilePosition {
+  int64_t start;
+  int64_t size;
+  std::vector<int64_t> tile_dim;
+};
+
 std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
+  
+  size_t total = 0;
+  for (const auto& handle : handles) {
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle);
+        sharded && sharded->GetSharding().type() == xla::OpSharding::OTHER) {
+      total += sharded->shards.size();
+    } else {
+      total += 1;
+    }
+  }
+
   std::vector<xla::PjRtFuture<>> futures;
-  futures.reserve(handles.size());
+  futures.reserve(total);
+  std::vector<xla::Literal> global_literals;
+  global_literals.reserve(total);
   std::vector<xla::Literal> literals;
   literals.reserve(handles.size());
+  std::vector<std::optional<TilePosition>> tile_positions;
+  tile_positions.reserve(handles.size());
   int64_t total_size = 0;
  
+  int64_t start_index = 0;
   for (auto handle : handles) {
-    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle); sharded && sharded->GetSharding().type() == xla::OpSharding::OTHER){ // got sharded and is OTHER sharding
-      std::vector<xla::PjRtFuture<>> futures_local_shards;
-      futures_local_shards.reserve(sharded->shards.size());
-      std::vector<xla::Literal> literals_local_shards;
-      literals_local_shards.reserve(sharded->shards.size());
-
-      for (auto& shard : sharded->shards){ // pull each local shard to the host in parallel
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle)){
+      if (sharded->GetSharding().type() == xla::OpSharding::REPLICATED){
+        // just take the first shard
+        auto& shard = sharded->shards[0];
         xla::Literal& literal =
-            literals_local_shards.emplace_back(host_output_shape(shard->buffer.get()));
-        futures_local_shards.push_back(shard->buffer->ToLiteral(&literal));
+            literals.emplace_back(host_output_shape(shard->buffer.get()));
+        futures.push_back(shard->buffer->ToLiteral(&literal));
+        tile_positions.emplace_back(std::nullopt);
+        ++start_index;
+        total_size += literal.size_bytes();
       }
+      else if (sharded->GetSharding().type() == xla::OpSharding::OTHER){
+        // other sharding
+        auto op_sharding = sharded->GetSharding();
+        auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
+        auto tile_dim = op_sharding.tile_assignment_dimensions();
+        int64_t replicated_dim = 1;
+        if (replicate_on_last_dim){
+          replicated_dim = tile_dim.Get(tile_dim.size() - 1);
+          tile_dim.RemoveLast();
+        }
+        auto rank = tile_dim.size();
+        auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
+        auto num_shards = sharded->shards.size();
 
-      for (auto& future : futures_local_shards){ // wait for all local shards to be transferred to the host
-        absl::Status status = future.Await();
-        XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
-                            << __FUNCTION__;
-      }
+        for (int64_t i = 0; i < num_shards; i+=replicated_dim){
+          auto tile_pos = tile_devices[i];
+          xla::Literal& literal = global_literals.emplace_back(host_output_shape(sharded->shards[tile_pos]->buffer.get()));
+          futures.push_back(sharded->shards[tile_pos]->buffer->ToLiteral(&literal));
+        }
+        tile_positions.emplace_back(TilePosition{start_index, num_shards/replicated_dim, std::vector<int64_t>(tile_dim.begin(), tile_dim.end())});
+        start_index += num_shards/replicated_dim;
 
-      xla::Literal& global_literal = // global literal to store the stitched result
-          literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
-      
-      auto op_sharding = sharded->GetSharding();
-      auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
-      auto tile_dim = op_sharding.tile_assignment_dimensions();
-      int64_t replicated_dim = 1;
-      if (replicate_on_last_dim){
-        replicated_dim = tile_dim.Get(tile_dim.size() - 1);
-        tile_dim.RemoveLast();
+        xla::Literal& literal = // global literal to store the stitched result
+            literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
+      } 
+      else {
+        XLA_ERROR() << "Sharding type not supported, got " << sharded->GetSharding().type();
       }
-      auto rank = tile_dim.size();
-      auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
-      
-      for (int64_t i = 0; i < literals_local_shards.size()/replicated_dim; ++i){
-        auto tile_pos = tile_devices[i*replicated_dim];
-        absl::Status status = global_literal.CopySliceFrom( /*src_literal*/ literals_local_shards[tile_pos], 
-                                                            /*src_base*/ std::vector<int64_t>(rank, 0), // just {0...0}
-                                                            /*dest_base*/ ComputeShardOffset(i, tile_dim, literals_local_shards[tile_pos].shape().dimensions()),
-                                                            /*copy_size*/ literals_local_shards[tile_pos].shape().dimensions());
-        XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
-                            << __FUNCTION__;
-      }
-      total_size += global_literal.size_bytes();
-    } 
-    else {
-      // fallback to legacy path
-      std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
-      XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
-      XLA_CHECK(pjrt_data->buffer != nullptr)
-          << "PjRt buffer is null in " << __FUNCTION__;
+    }
+    else if(auto unsharded = std::dynamic_pointer_cast<PjRtData>(handle)){
+      // unsharded
       xla::Literal& literal =
-          literals.emplace_back(host_output_shape(pjrt_data->buffer.get()));
-      futures.push_back(pjrt_data->buffer->ToLiteral(&literal));
-
+          literals.emplace_back(host_output_shape(unsharded->buffer.get()));
+      futures.push_back(unsharded->buffer->ToLiteral(&literal));
+      tile_positions.emplace_back(std::nullopt);
+      ++start_index;
       total_size += literal.size_bytes();
+    }
+    else {
+      XLA_ERROR() << "Data handle is null in " << __FUNCTION__;
     }
   }
   
-  for (auto& future : futures) { // just waiting for all handles to be transferred to the host
+  for (auto& future : futures) {
     absl::Status status = future.Await();
     XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
                          << __FUNCTION__;
   }
+
+  for (int64_t i = 0; i < tile_positions.size(); ++i){
+    if (!tile_positions[i]) continue; // unsharded
+    auto& tp = tile_positions[i].value();
+    for (int64_t j = tp.start; j < tp.start + tp.size; ++j){
+      absl::Status status = literals[i].CopySliceFrom(  /*src_literal*/ global_literals[j], 
+                                                        /*src_base*/ std::vector<int64_t>(tp.tile_dim.size(), 0), // just {0...0}
+                                                        /*dest_base*/ ComputeShardOffset(j - tp.start, tp.tile_dim, global_literals[j].shape().dimensions()),
+                                                        /*copy_size*/ global_literals[j].shape().dimensions());
+      XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
+                          << __FUNCTION__;
+    }
+    total_size += literals[i].size_bytes();
+  }
+
   InboundDataMetric()->AddSample(total_size);
 
   return literals;
