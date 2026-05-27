@@ -122,6 +122,18 @@ std::vector<int64_t> ComputeTileAssignmentDevices(
                               sharding.tile_assignment_devices().end());
 }
 
+// Records the layout of one OTHER-sharded handle's per-shard literals inside
+// the flat `global_literals` pool. `start` and `size` describe the contiguous
+// range `[start, start + size)` of `global_literals` that belongs to the
+// handle; `tile_dim` is an owning copy of the sharding's tile dimensions
+// (replicate_on_last_tile_dim already stripped) used by the stitch pass.
+//
+// The owning `std::vector<std::optional<TilePosition>>` is indexed in
+// lock-step with the function's `literals` output vector: each input handle
+// contributes exactly one entry, with std::nullopt for handles that don't
+// need stitching (REPLICATED / unsharded). Anyone editing TransferFromDevice
+// must preserve that one-entry-per-handle invariant or the stitch pass will
+// write to the wrong literal.
 struct TilePosition {
   int64_t start;
   int64_t size;
@@ -579,7 +591,6 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
             literals.emplace_back(host_output_shape(shard->buffer.get()));
         futures.push_back(shard->buffer->ToLiteral(&literal));
         tile_positions.emplace_back(std::nullopt);
-        total_size += literal.size_bytes();
       } else if (sharded->GetSharding().type() == xla::OpSharding::OTHER) {
         auto op_sharding = sharded->GetSharding();
         auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
@@ -616,10 +627,10 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
           literals.emplace_back(host_output_shape(unsharded->buffer.get()));
       futures.push_back(unsharded->buffer->ToLiteral(&literal));
       tile_positions.emplace_back(std::nullopt);
-      total_size += literal.size_bytes();
     } else {
       XLA_ERROR() << "Data handle is null in " << __FUNCTION__;
     }
+    total_size += literals.back().size_bytes();
   }
   
   for (auto& future : futures) {
@@ -639,7 +650,6 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
       XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
                           << __FUNCTION__;
     }
-    total_size += literals[i].size_bytes();
   }
 
   InboundDataMetric()->AddSample(total_size);
