@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(learning-opportunities:learning-opportunities)",
+      "WebSearch",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
