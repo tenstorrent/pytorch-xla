@@ -4,6 +4,8 @@
 #include <ATen/Tensor.h>
 #include <torch/csrc/lazy/core/metrics.h>
 
+#include <atomic>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +16,11 @@
 #include "xla/literal.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+
+// AtenSource lifecycle tracking - enable with TF_VLOG or ATENSOURCE_TRACE env var
+#ifndef ATENSOURCE_TRACE_ENABLED
+#define ATENSOURCE_TRACE_ENABLED 1
+#endif
 
 namespace torch_xla {
 namespace runtime {
@@ -51,6 +58,24 @@ class TensorSource {
 
 class AtenSource : public TensorSource {
  public:
+  // Static tracking for AtenSource instances
+  static std::atomic<uint64_t>& LiveCount() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+  }
+  static std::atomic<uint64_t>& TotalCreated() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+  }
+  static std::atomic<uint64_t>& TotalDestroyed() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+  }
+  static std::atomic<int64_t>& LiveBytes() {
+    static std::atomic<int64_t> bytes{0};
+    return bytes;
+  }
+
   AtenSource(const at::Tensor& tensor, xla::Shape shape, std::string device)
       : TensorSource(std::move(device)), shape_(std::move(shape)) {
     at::ScalarType target_torch_type = TorchTypeFromXlaType(primitive_type());
@@ -66,6 +91,47 @@ class AtenSource : public TensorSource {
                 /*non_blocking=*/false,
                 /*copy=*/false, at::MemoryFormat::Contiguous)
             .contiguous());
+
+    // Track this instance
+    id_ = TotalCreated().fetch_add(1, std::memory_order_relaxed);
+    bytes_ = tensor_.nbytes();
+    LiveCount().fetch_add(1, std::memory_order_relaxed);
+    LiveBytes().fetch_add(bytes_, std::memory_order_relaxed);
+
+#if ATENSOURCE_TRACE_ENABLED
+    // Get storage use_count for debugging reference counting
+    int64_t storage_use_count = tensor_.storage().use_count();
+    std::cerr << "[AtenSource] CREATED id=" << id_
+              << " device=" << this->device()
+              << " bytes=" << bytes_
+              << " shape=[";
+    for (size_t i = 0; i < tensor_.dim(); ++i) {
+      if (i > 0) std::cerr << ",";
+      std::cerr << tensor_.size(i);
+    }
+    std::cerr << "]"
+              << " storage_use_count=" << storage_use_count
+              << " live_count=" << LiveCount().load()
+              << " live_bytes=" << LiveBytes().load()
+              << std::endl;
+#endif
+  }
+
+  ~AtenSource() {
+    TotalDestroyed().fetch_add(1, std::memory_order_relaxed);
+    LiveCount().fetch_sub(1, std::memory_order_relaxed);
+    LiveBytes().fetch_sub(bytes_, std::memory_order_relaxed);
+
+#if ATENSOURCE_TRACE_ENABLED
+    // Get storage use_count before destruction
+    int64_t storage_use_count = tensor_.storage().use_count();
+    std::cerr << "[AtenSource] DESTROYED id=" << id_
+              << " bytes=" << bytes_
+              << " storage_use_count=" << storage_use_count
+              << " live_count=" << LiveCount().load()
+              << " live_bytes=" << LiveBytes().load()
+              << std::endl;
+#endif
   }
 
   const void* data() const override { return tensor_.const_data_ptr(); }
@@ -85,9 +151,14 @@ class AtenSource : public TensorSource {
     return {sizes.begin(), sizes.end()};
   }
 
+  uint64_t id() const { return id_; }
+  int64_t bytes() const { return bytes_; }
+
  private:
   at::Tensor tensor_;
   xla::Shape shape_;
+  uint64_t id_{0};
+  int64_t bytes_{0};
 };
 
 class LiteralSource : public TensorSource {
