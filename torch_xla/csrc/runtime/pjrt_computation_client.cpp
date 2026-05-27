@@ -93,6 +93,41 @@ torch::lazy::hash_t hash_comp_env(
   return hash;
 }
 
+std::vector<int64_t> ComputeShardOffset(int64_t shard_idx,
+                                        absl::Span<const int64_t> tile_dim,
+                                        absl::Span<const int64_t> shard_dims) {
+  int64_t rank = tile_dim.size();
+  std::vector<int64_t> offset(rank, 0);
+  int64_t remainder = shard_idx;
+  for (int64_t j = rank - 1; j >= 0; --j) {
+    int64_t n_j = remainder % tile_dim[j];
+    remainder /= tile_dim[j];
+    offset[j] = n_j * shard_dims[j];
+  }
+  return offset;
+}
+
+std::vector<int64_t> ComputeTileAssignmentDevices(
+    const xla::OpSharding& sharding) {
+  if (!sharding.iota_reshape_dims().empty()) {
+    // V2 iota form (common case)
+    xla::TileAssignment tile_assignment(sharding.tile_assignment_dimensions(),
+                                        sharding.iota_reshape_dims(),
+                                        sharding.iota_transpose_perm());
+    return std::vector<int64_t>(tile_assignment.array().begin(),
+                                tile_assignment.array().end());
+  }
+  // V1 explicit form
+  return std::vector<int64_t>(sharding.tile_assignment_devices().begin(),
+                              sharding.tile_assignment_devices().end());
+}
+
+struct TilePosition {
+  int64_t start;
+  int64_t size;
+  std::vector<int64_t> tile_dim;
+};
+
 }  // namespace
 
 std::string PjRtComputationClient::PjRtDeviceToString(
@@ -509,119 +544,80 @@ std::shared_ptr<xla::PjRtBuffer> PjRtComputationClient::GetPjRtBuffer(
   }
 }
 
-std::vector<int64_t> ComputeShardOffset(int64_t shard_idx, absl::Span<const int64_t> tile_dim, absl::Span<const int64_t> shard_dims){
-  // Compute the offset of the shard in the global tensor
-  int64_t rank = tile_dim.size();
-  std::vector<int64_t> offset(rank, 0);
-  int64_t remainder = shard_idx;
-  for(int j = rank-1; j>=0; --j){
-    int64_t n_j = remainder % tile_dim[j];
-    remainder /= tile_dim[j];
-    offset[j] = n_j * shard_dims[j];
-  }
-  return offset;
-}
-
-std::vector<int64_t> ComputeTileAssignmentDevices(const xla::OpSharding& sharding){
-  if (!sharding.iota_reshape_dims().empty()) {
-    // V2 iota form (common case)
-    xla::TileAssignment tile_assignment(
-        sharding.tile_assignment_dimensions(),
-        sharding.iota_reshape_dims(),
-        sharding.iota_transpose_perm());
-    return std::vector<int64_t>(tile_assignment.array().begin(), tile_assignment.array().end());
-  }
-  // V1 explicit form
-  return std::vector<int64_t>(sharding.tile_assignment_devices().begin(),
-                              sharding.tile_assignment_devices().end());
-}
-
-// struct for reconstructing the global tensor from local shards
-// from global_literals[start] with size tiles
-struct TilePosition {
-  int64_t start;
-  int64_t size;
-  std::vector<int64_t> tile_dim;
-};
-
 std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     absl::Span<const DataPtr> handles) {
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
   
-  size_t total = 0;
+  size_t total_transfers = 0;
   for (const auto& handle : handles) {
     if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle);
         sharded && sharded->GetSharding().type() == xla::OpSharding::OTHER) {
-      total += sharded->shards.size();
+      total_transfers += sharded->shards.size();
     } else {
-      total += 1;
+      total_transfers += 1;
     }
   }
 
   std::vector<xla::PjRtFuture<>> futures;
-  futures.reserve(total);
+  futures.reserve(total_transfers);
   std::vector<xla::Literal> global_literals;
-  global_literals.reserve(total);
+  global_literals.reserve(total_transfers);
   std::vector<xla::Literal> literals;
   literals.reserve(handles.size());
   std::vector<std::optional<TilePosition>> tile_positions;
   tile_positions.reserve(handles.size());
   int64_t total_size = 0;
- 
-  int64_t start_index = 0;
-  for (auto handle : handles) {
-    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle)){
-      if (sharded->GetSharding().type() == xla::OpSharding::REPLICATED){
+
+  for (const auto& handle : handles) {
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle)) {
+      if (sharded->GetSharding().type() == xla::OpSharding::REPLICATED) {
         // just take the first shard
         auto& shard = sharded->shards[0];
         xla::Literal& literal =
             literals.emplace_back(host_output_shape(shard->buffer.get()));
         futures.push_back(shard->buffer->ToLiteral(&literal));
         tile_positions.emplace_back(std::nullopt);
-        ++start_index;
         total_size += literal.size_bytes();
-      }
-      else if (sharded->GetSharding().type() == xla::OpSharding::OTHER){
-        // other sharding
+      } else if (sharded->GetSharding().type() == xla::OpSharding::OTHER) {
         auto op_sharding = sharded->GetSharding();
         auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
         auto tile_dim = op_sharding.tile_assignment_dimensions();
         int64_t replicated_dim = 1;
-        if (replicate_on_last_dim){
+        if (replicate_on_last_dim) {
           replicated_dim = tile_dim.Get(tile_dim.size() - 1);
           tile_dim.RemoveLast();
         }
-        auto rank = tile_dim.size();
         auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
         auto num_shards = sharded->shards.size();
 
-        for (int64_t i = 0; i < num_shards; i+=replicated_dim){
+        int64_t start = global_literals.size();
+        for (int64_t i = 0; i < num_shards; i += replicated_dim) {
           auto tile_pos = tile_devices[i];
-          xla::Literal& literal = global_literals.emplace_back(host_output_shape(sharded->shards[tile_pos]->buffer.get()));
-          futures.push_back(sharded->shards[tile_pos]->buffer->ToLiteral(&literal));
+          xla::Literal& literal = global_literals.emplace_back(
+              host_output_shape(sharded->shards[tile_pos]->buffer.get()));
+          futures.push_back(
+              sharded->shards[tile_pos]->buffer->ToLiteral(&literal));
         }
-        tile_positions.emplace_back(TilePosition{start_index, num_shards/replicated_dim, std::vector<int64_t>(tile_dim.begin(), tile_dim.end())});
-        start_index += num_shards/replicated_dim;
+        tile_positions.emplace_back(TilePosition{
+            start, static_cast<int64_t>(num_shards / replicated_dim),
+            std::vector<int64_t>(tile_dim.begin(), tile_dim.end())});
 
-        xla::Literal& literal = // global literal to store the stitched result
-            literals.emplace_back(xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
-      } 
-      else {
-        XLA_ERROR() << "Sharding type not supported, got " << sharded->GetSharding().type();
+        // global literal to store the stitched result
+        literals.emplace_back(
+            xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
+      } else {
+        XLA_ERROR() << "Sharding type not supported, got "
+                    << sharded->GetSharding().type();
       }
-    }
-    else if(auto unsharded = std::dynamic_pointer_cast<PjRtData>(handle)){
-      // unsharded
+    } else if (auto unsharded = std::dynamic_pointer_cast<PjRtData>(handle)) {
       xla::Literal& literal =
           literals.emplace_back(host_output_shape(unsharded->buffer.get()));
       futures.push_back(unsharded->buffer->ToLiteral(&literal));
       tile_positions.emplace_back(std::nullopt);
-      ++start_index;
       total_size += literal.size_bytes();
-    }
-    else {
+    } else {
       XLA_ERROR() << "Data handle is null in " << __FUNCTION__;
     }
   }
