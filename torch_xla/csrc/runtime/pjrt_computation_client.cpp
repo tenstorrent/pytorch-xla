@@ -93,6 +93,53 @@ torch::lazy::hash_t hash_comp_env(
   return hash;
 }
 
+std::vector<int64_t> ComputeShardOffset(int64_t shard_idx,
+                                        absl::Span<const int64_t> tile_dim,
+                                        absl::Span<const int64_t> shard_dims) {
+  int64_t rank = tile_dim.size();
+  std::vector<int64_t> offset(rank, 0);
+  int64_t remainder = shard_idx;
+  for (int64_t j = rank - 1; j >= 0; --j) {
+    int64_t n_j = remainder % tile_dim[j];
+    remainder /= tile_dim[j];
+    offset[j] = n_j * shard_dims[j];
+  }
+  return offset;
+}
+
+std::vector<int64_t> ComputeTileAssignmentDevices(
+    const xla::OpSharding& sharding) {
+  if (!sharding.iota_reshape_dims().empty()) {
+    // V2 iota form (common case)
+    xla::TileAssignment tile_assignment(sharding.tile_assignment_dimensions(),
+                                        sharding.iota_reshape_dims(),
+                                        sharding.iota_transpose_perm());
+    return std::vector<int64_t>(tile_assignment.array().begin(),
+                                tile_assignment.array().end());
+  }
+  // V1 explicit form
+  return std::vector<int64_t>(sharding.tile_assignment_devices().begin(),
+                              sharding.tile_assignment_devices().end());
+}
+
+// Records the layout of one OTHER-sharded handle's per-shard literals inside
+// the flat `global_literals` pool. `start` and `size` describe the contiguous
+// range `[start, start + size)` of `global_literals` that belongs to the
+// handle; `tile_dim` is an owning copy of the sharding's tile dimensions
+// (replicate_on_last_tile_dim already stripped) used by the stitch pass.
+//
+// The owning `std::vector<std::optional<TilePosition>>` is indexed in
+// lock-step with the function's `literals` output vector: each input handle
+// contributes exactly one entry, with std::nullopt for handles that don't
+// need stitching (REPLICATED / unsharded). Anyone editing TransferFromDevice
+// must preserve that one-entry-per-handle invariant or the stitch pass will
+// write to the wrong literal.
+struct TilePosition {
+  int64_t start;
+  int64_t size;
+  std::vector<int64_t> tile_dim;
+};
+
 }  // namespace
 
 std::string PjRtComputationClient::PjRtDeviceToString(
@@ -514,30 +561,97 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
   metrics::TimedSection timed(TransferFromDeviceMetric());
   tsl::profiler::TraceMe activity("PjRtComputationClient::TransferFromDevice",
                                   tsl::profiler::TraceMeLevel::kInfo);
+  
+  size_t total_transfers = 0;
+  for (const auto& handle : handles) {
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle);
+        sharded && sharded->GetSharding().type() == xla::OpSharding::OTHER) {
+      total_transfers += sharded->shards.size();
+    } else {
+      total_transfers += 1;
+    }
+  }
+
   std::vector<xla::PjRtFuture<>> futures;
-  futures.reserve(handles.size());
+  futures.reserve(total_transfers);
+  std::vector<xla::Literal> global_literals;
+  global_literals.reserve(total_transfers);
   std::vector<xla::Literal> literals;
   literals.reserve(handles.size());
+  std::vector<std::optional<TilePosition>> tile_positions;
+  tile_positions.reserve(handles.size());
   int64_t total_size = 0;
-  for (auto handle : handles) {
-    // Use XLA replication to reassemble the sharded data. If input handle
-    // is not sharded, then it is a no-op.
-    std::shared_ptr<PjRtData> pjrt_data = ReplicateShardedData(handle);
-    XLA_CHECK(pjrt_data) << "PjRt_data is null in " << __FUNCTION__;
-    XLA_CHECK(pjrt_data->buffer != nullptr)
-        << "PjRt buffer is null in " << __FUNCTION__;
 
-    xla::Literal& literal =
-        literals.emplace_back(host_output_shape(pjrt_data->buffer.get()));
-    futures.push_back(pjrt_data->buffer->ToLiteral(&literal));
+  for (const auto& handle : handles) {
+    if (auto sharded = std::dynamic_pointer_cast<PjRtShardedData>(handle)) {
+      if (sharded->GetSharding().type() == xla::OpSharding::REPLICATED) {
+        // just take the first shard
+        auto& shard = sharded->shards[0];
+        xla::Literal& literal =
+            literals.emplace_back(host_output_shape(shard->buffer.get()));
+        futures.push_back(shard->buffer->ToLiteral(&literal));
+        tile_positions.emplace_back(std::nullopt);
+      } else if (sharded->GetSharding().type() == xla::OpSharding::OTHER) {
+        auto op_sharding = sharded->GetSharding();
+        auto replicate_on_last_dim = op_sharding.replicate_on_last_tile_dim();
+        auto tile_dim = op_sharding.tile_assignment_dimensions();
+        int64_t replicated_dim = 1;
+        if (replicate_on_last_dim) {
+          replicated_dim = tile_dim.Get(tile_dim.size() - 1);
+          tile_dim.RemoveLast();
+        }
+        auto tile_devices = ComputeTileAssignmentDevices(op_sharding);
+        auto num_shards = sharded->shards.size();
 
-    total_size += literal.size_bytes();
+        int64_t start = global_literals.size();
+        for (int64_t i = 0; i < num_shards; i += replicated_dim) {
+          auto tile_pos = tile_devices[i];
+          xla::Literal& literal = global_literals.emplace_back(
+              host_output_shape(sharded->shards[tile_pos]->buffer.get()));
+          futures.push_back(
+              sharded->shards[tile_pos]->buffer->ToLiteral(&literal));
+        }
+        tile_positions.emplace_back(TilePosition{
+            start, static_cast<int64_t>(num_shards / replicated_dim),
+            std::vector<int64_t>(tile_dim.begin(), tile_dim.end())});
+
+        // global literal to store the stitched result
+        literals.emplace_back(
+            xla::ShapeUtil::DeviceShapeToHostShape(sharded->shape()));
+      } else {
+        XLA_ERROR() << "Sharding type not supported, got "
+                    << sharded->GetSharding().type();
+      }
+    } else if (auto unsharded = std::dynamic_pointer_cast<PjRtData>(handle)) {
+      xla::Literal& literal =
+          literals.emplace_back(host_output_shape(unsharded->buffer.get()));
+      futures.push_back(unsharded->buffer->ToLiteral(&literal));
+      tile_positions.emplace_back(std::nullopt);
+    } else {
+      XLA_ERROR() << "Data handle is null in " << __FUNCTION__;
+    }
+    total_size += literals.back().size_bytes();
   }
+  
   for (auto& future : futures) {
     absl::Status status = future.Await();
     XLA_CHECK_OK(status) << "Failed to await future from buffer to literal in"
                          << __FUNCTION__;
   }
+
+  for (int64_t i = 0; i < tile_positions.size(); ++i){
+    if (!tile_positions[i]) continue; // unsharded
+    auto& tp = tile_positions[i].value();
+    for (int64_t j = tp.start; j < tp.start + tp.size; ++j){
+      absl::Status status = literals[i].CopySliceFrom(  /*src_literal*/ global_literals[j], 
+                                                        /*src_base*/ std::vector<int64_t>(tp.tile_dim.size(), 0), // just {0...0}
+                                                        /*dest_base*/ ComputeShardOffset(j - tp.start, tp.tile_dim, global_literals[j].shape().dimensions()),
+                                                        /*copy_size*/ global_literals[j].shape().dimensions());
+      XLA_CHECK_OK(status) << "Failed to copy slice from local shard to global literal in"
+                          << __FUNCTION__;
+    }
+  }
+
   InboundDataMetric()->AddSample(total_size);
 
   return literals;
