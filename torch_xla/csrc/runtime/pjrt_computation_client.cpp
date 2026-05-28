@@ -322,12 +322,6 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
 
     total_size += xla::ShapeUtil::ByteSizeOf(tensor->shape());
 
-    // Capture tensor info for callback logging
-    auto* aten_source = dynamic_cast<const AtenSource*>(tensor.get());
-    uint64_t tensor_id = aten_source ? aten_source->id() : 0;
-    int64_t tensor_bytes = aten_source ? aten_source->bytes() : 0;
-    long tensor_use_count = tensor.use_count();
-
     std::shared_ptr<xla::PjRtBuffer> buffer =
         std::move(client_
                       ->BufferFromHostBuffer(
@@ -335,18 +329,7 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
                           tensor->dimensions(), tensor->byte_strides(),
                           xla::PjRtClient::HostBufferSemantics::
                               kImmutableUntilTransferCompletes,
-                          [tensor, tensor_id, tensor_bytes, tensor_use_count]() {
-#if ATENSOURCE_TRACE_ENABLED
-                            std::cerr << "[AtenSource] CALLBACK invoked id=" << tensor_id
-                                      << " bytes=" << tensor_bytes
-                                      << " use_count_at_capture=" << tensor_use_count
-                                      << " use_count_now=" << tensor.use_count()
-                                      << " live_count=" << AtenSource::LiveCount().load()
-                                      << " live_bytes=" << AtenSource::LiveBytes().load()
-                                      << std::endl;
-#endif
-                            // tensor shared_ptr destructor runs here, releasing AtenSource
-                          },
+                          [tensor]() { /* frees tensor */ },
                           *pjrt_device->default_memory_space(),
                           /*device_layout=*/nullptr)
                       .value());
