@@ -326,17 +326,7 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
     auto* aten_source = dynamic_cast<const AtenSource*>(tensor.get());
     uint64_t tensor_id = aten_source ? aten_source->id() : 0;
     int64_t tensor_bytes = aten_source ? aten_source->bytes() : 0;
-    uintptr_t tensor_data_ptr = reinterpret_cast<uintptr_t>(tensor->data());
     long tensor_use_count = tensor.use_count();
-
-#if ATENSOURCE_TRACE_ENABLED
-    std::cerr << "[AtenSource] TRANSFER id=" << tensor_id
-              << " device=" << tensor->device()
-              << " bytes=" << tensor_bytes
-              << std::hex << " data_ptr=0x" << tensor_data_ptr << std::dec
-              << " use_count=" << tensor_use_count
-              << std::endl;
-#endif
 
     std::shared_ptr<xla::PjRtBuffer> buffer =
         std::move(client_
@@ -345,11 +335,10 @@ std::vector<ComputationClient::DataPtr> PjRtComputationClient::TransferToDevice(
                           tensor->dimensions(), tensor->byte_strides(),
                           xla::PjRtClient::HostBufferSemantics::
                               kImmutableUntilTransferCompletes,
-                          [tensor, tensor_id, tensor_bytes, tensor_data_ptr, tensor_use_count]() {
+                          [tensor, tensor_id, tensor_bytes, tensor_use_count]() {
 #if ATENSOURCE_TRACE_ENABLED
-                            std::cerr << "[AtenSource] CALLBACK id=" << tensor_id
+                            std::cerr << "[AtenSource] CALLBACK invoked id=" << tensor_id
                                       << " bytes=" << tensor_bytes
-                                      << std::hex << " data_ptr=0x" << tensor_data_ptr << std::dec
                                       << " use_count_at_capture=" << tensor_use_count
                                       << " use_count_now=" << tensor.use_count()
                                       << " live_count=" << AtenSource::LiveCount().load()

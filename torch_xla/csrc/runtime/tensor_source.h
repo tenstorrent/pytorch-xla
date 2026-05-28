@@ -79,19 +79,9 @@ class AtenSource : public TensorSource {
   AtenSource(const at::Tensor& tensor, xla::Shape shape, std::string device)
       : TensorSource(std::move(device)), shape_(std::move(shape)) {
     at::ScalarType target_torch_type = TorchTypeFromXlaType(primitive_type());
-    bool dtype_mismatch = (target_torch_type != tensor.type().scalarType());
-    if (dtype_mismatch) {
+    if (target_torch_type != tensor.type().scalarType()) {
       TORCH_LAZY_COUNTER("AtenSourceDowncasts", 1);
     }
-
-#if ATENSOURCE_TRACE_ENABLED
-    // Capture input tensor info BEFORE .to().contiguous()
-    uintptr_t input_data_ptr = reinterpret_cast<uintptr_t>(tensor.const_data_ptr());
-    uintptr_t input_storage_ptr = reinterpret_cast<uintptr_t>(tensor.storage().data());
-    int64_t input_storage_use_count = tensor.storage().use_count();
-    bool input_is_contiguous = tensor.is_contiguous();
-#endif
-
     // TODO(ysiraichi): check, first, if tensor lives in a device that the
     // current PjRt client has access. If so, we don't need to go through the
     // CPU.
@@ -109,34 +99,18 @@ class AtenSource : public TensorSource {
     LiveBytes().fetch_add(bytes_, std::memory_order_relaxed);
 
 #if ATENSOURCE_TRACE_ENABLED
-    // Get output tensor info AFTER .to().contiguous()
-    uintptr_t output_data_ptr = reinterpret_cast<uintptr_t>(tensor_.const_data_ptr());
-    uintptr_t output_storage_ptr = reinterpret_cast<uintptr_t>(tensor_.storage().data());
-    int64_t output_storage_use_count = tensor_.storage().use_count();
-    bool same_storage = (input_storage_ptr == output_storage_ptr);
-    bool same_data = (input_data_ptr == output_data_ptr);
-
+    // Get storage use_count for debugging reference counting
+    int64_t storage_use_count = tensor_.storage().use_count();
     std::cerr << "[AtenSource] CREATED id=" << id_
               << " device=" << this->device()
               << " bytes=" << bytes_
-              << std::hex
-              << " input_data_ptr=0x" << input_data_ptr
-              << " input_storage_ptr=0x" << input_storage_ptr
-              << " output_data_ptr=0x" << output_data_ptr
-              << " output_storage_ptr=0x" << output_storage_ptr
-              << std::dec
-              << " input_storage_usecount=" << input_storage_use_count
-              << " output_storage_usecount=" << output_storage_use_count
-              << " input_is_contiguous=" << input_is_contiguous
-              << " dtype_mismatch=" << dtype_mismatch
-              << " same_storage=" << same_storage
-              << " same_data=" << same_data
               << " shape=[";
     for (size_t i = 0; i < tensor_.dim(); ++i) {
       if (i > 0) std::cerr << ",";
       std::cerr << tensor_.size(i);
     }
     std::cerr << "]"
+              << " storage_use_count=" << storage_use_count
               << " live_count=" << LiveCount().load()
               << " live_bytes=" << LiveBytes().load()
               << std::endl;
@@ -149,28 +123,14 @@ class AtenSource : public TensorSource {
     LiveBytes().fetch_sub(bytes_, std::memory_order_relaxed);
 
 #if ATENSOURCE_TRACE_ENABLED
-    // Get info before destruction
+    // Get storage use_count before destruction
     int64_t storage_use_count = tensor_.storage().use_count();
-    uintptr_t data_ptr = reinterpret_cast<uintptr_t>(tensor_.const_data_ptr());
-    uintptr_t storage_ptr = reinterpret_cast<uintptr_t>(tensor_.storage().data());
-    int64_t storage_nbytes = tensor_.storage().nbytes();
-
-    std::cerr << "[AtenSource] DESTROYING id=" << id_
+    std::cerr << "[AtenSource] DESTROYED id=" << id_
               << " bytes=" << bytes_
-              << std::hex
-              << " data_ptr=0x" << data_ptr
-              << " storage_ptr=0x" << storage_ptr
-              << std::dec
-              << " storage_nbytes=" << storage_nbytes
               << " storage_use_count=" << storage_use_count
               << " live_count=" << LiveCount().load()
-              << " live_bytes=" << LiveBytes().load();
-
-    // Check if this is the last reference - memory should be freed after this
-    if (storage_use_count == 1) {
-      std::cerr << " [LAST_REF - memory should free]";
-    }
-    std::cerr << std::endl;
+              << " live_bytes=" << LiveBytes().load()
+              << std::endl;
 #endif
   }
 
