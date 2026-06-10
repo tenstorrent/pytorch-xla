@@ -3407,9 +3407,15 @@ void InitXlaModuleBindings(py::module m) {
              // Device will be Virtual device if SPMD is enabled.
              torch::lazy::BackendDevice device =
                  torch_xla::bridge::GetCurrentDevice();
-             auto results =
-                 XLAGraphExecutor::Get()->ExecuteComputationWithBarrier(
-                     hash, graph_inputs, device);
+             std::vector<torch::lazy::BackendDataPtr> results;
+             {
+               // Release the GIL while executing the graph. PJRT plugins may
+               // run Python during execution (e.g. tt-xla EmitPy codegen) and
+               // holding the GIL here deadlocks against them.
+               NoGilSection nogil;
+               results = XLAGraphExecutor::Get()->ExecuteComputationWithBarrier(
+                   hash, graph_inputs, device);
+             }
              std::vector<at::Tensor> retlist;
              {
                TORCH_LAZY_TIMED("RunCachedGraphOutputData");
