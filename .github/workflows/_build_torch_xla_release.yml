@@ -38,7 +38,7 @@ on:
         default: 'master'
 jobs:
   build-wheels:
-    runs-on: ubuntu-latest
+    runs-on: tt-ubuntu-2204-large-stable
     timeout-minutes: 540
     env:
       ARTIFACT_NAME: install-artifact-torch-xla-release-${{ inputs.python_version }}
