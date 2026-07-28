@@ -92,15 +92,51 @@ jobs:
         run: |
           apt-get update && apt-get install -y curl git build-essential
 
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
+          PY=${{ inputs.python_version }}
 
-          curl https://pyenv.run | bash
-          export PATH="$HOME/.pyenv/bin:$PATH"
+          # /github/home is a volume that persists across every job landing on this
+          # builder, and it holds both the pyenv trees and the Bazel output bases.
+          # Bazel's @local_config_python (pybind11_bazel's python_configure) bakes the
+          # absolute path of the local interpreter into its cached external repo and
+          # declares no dependency on the interpreter, so it is never re-fetched when the
+          # interpreter changes. The old layout installed every version's pyenv at the
+          # same path and deleted it at the end of the job, so a 3.11 job landing on a
+          # builder that had last built 3.12 aborted analysis with:
+          #   Inconsistent filesystem operations. /github/home/.pyenv/versions/3.12.13/bin
+          #   is no longer an existing directory.
+          # Give each interpreter its own pyenv tree and its own Bazel output base, at
+          # stable paths that are never deleted, so the versions cannot observe each
+          # other's state.
+
+          # Reclaim the pre-fix shared state: dangling interpreter paths plus tens of GB
+          # of output that nothing references any more.
+          rm -rf /github/home/.pyenv /github/home/.cache/bazel
+
+          export PYENV_ROOT="/github/home/pyenv/$PY"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          if [ ! -x "$PYENV_ROOT/bin/pyenv" ]; then
+            rm -rf "$PYENV_ROOT"
+            curl https://pyenv.run | bash
+          fi
           eval "$(pyenv init -)"
-          pyenv install ${{ inputs.python_version }}
-          pyenv global ${{ inputs.python_version }}
-          ln -sf $(pyenv which python${{ inputs.python_version }}) /usr/local/bin/python${{ inputs.python_version }}
+          pyenv install -s $PY
+          pyenv global $PY
+          ln -sf $(pyenv which python$PY) /usr/local/bin/python$PY
+
+          # Key the Bazel output base on the full interpreter version, so a pyenv patch
+          # bump gets a fresh base instead of leaving dangling paths in an existing one.
+          PY_FULL=$(basename "$(python$PY -c 'import sys; print(sys.prefix)')")
+          BAZEL_OUTPUT_USER_ROOT="/github/home/bazel/$PY_FULL"
+          mkdir -p "$BAZEL_OUTPUT_USER_ROOT" && touch "$BAZEL_OUTPUT_USER_ROOT"
+          # Drop bases unused for two weeks so patch bumps do not pile up on the builder.
+          find /github/home/bazel -mindepth 1 -maxdepth 1 -type d -mtime +14 \
+            -not -path "$BAZEL_OUTPUT_USER_ROOT" -exec rm -rf {} + || true
+
+          # Pin the hermetic interpreter explicitly. Otherwise XLA's python_repo.bzl
+          # infers it by shelling out to `python3 --version` (WORKSPACE passes
+          # default_python_version = "system"), which Bazel does not track and which
+          # depends on whatever pyenv's global setting happens to be.
+          export HERMETIC_PYTHON_VERSION=$PY
 
           # Install essential packages for Python ${{ inputs.python_version }}
           python${{ inputs.python_version }} -m pip install --upgrade pip
@@ -125,14 +161,14 @@ jobs:
 
           # Build PyTorch/XLA
           cd xla/
-          MAX_JOBS=8 BAZEL_JOBS=8 python${{ inputs.python_version }} setup.py bdist_wheel
+          # .bazelrc try-imports this; it is the only way to reach a startup option,
+          # since setup.py owns the bazel command line.
+          echo "startup --output_user_root=$BAZEL_OUTPUT_USER_ROOT" > .bazelrc.user
+          MAX_JOBS=8 BAZEL_JOBS=8 python$PY setup.py bdist_wheel
 
           # Collect wheels
           mkdir -p /dist
           cp dist/*.whl /dist/
-
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
 
       - name: "Upload Wheels Artifact"
         id: upload
