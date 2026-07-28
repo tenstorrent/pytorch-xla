@@ -12,6 +12,9 @@ on:
         options:
           - '3.11'
           - '3.12'
+          # Mirrors what a push to master does, so the two-version path can be
+          # exercised manually instead of only by landing on master.
+          - 'all'
         default: '3.11'
 
 concurrency:
@@ -32,22 +35,30 @@ jobs:
     if: needs.check_code_changes.outputs.has_code_changes == 'true'
     needs: check_code_changes
     strategy:
+      # The versions are independent, so one failing must not cancel the other: that
+      # throws away a ~100 minute build and leaves nothing to publish.
+      fail-fast: false
       matrix:
-        # On push to master: build all versions ["3.11", "3.12"]
+        # On push to master, or a manual trigger with 'all': build ["3.11", "3.12"]
         # On manual trigger: build only the selected inputs.python_version
-        python_version: ${{ github.event_name == 'push' && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
+        python_version: ${{ (github.event_name == 'push' || inputs.python_version == 'all') && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
     uses: ./.github/workflows/_build_torch_xla_release.yml
     with:
       python_version: ${{ matrix.python_version }}
 
   publish-torch-xla:
     name: "Publish PyTorch/XLA Python ${{ matrix.python_version }}"
-    if: ${{ !cancelled() && !failure() }}
+    # `needs` cannot be narrowed to a single matrix leg, so this depends on the whole
+    # build matrix. Gate on the build not being skipped rather than on !failure(), so one
+    # version failing to build still lets the other publish; the leg whose wheel is
+    # missing then fails loudly on download instead of silently skipping both.
+    if: ${{ !cancelled() && needs['build-torch-xla'].result != 'skipped' }}
     needs: build-torch-xla
     strategy:
+      fail-fast: false
       matrix:
         # Matches the build job matrix to publish the same versions that were built
-        python_version: ${{ github.event_name == 'push' && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
+        python_version: ${{ (github.event_name == 'push' || inputs.python_version == 'all') && fromJSON('["3.11", "3.12"]') || fromJSON(format('["{0}"]', inputs.python_version)) }}
     uses: ./.github/workflows/_publish_torch_xla.yml
     secrets: inherit
     permissions:
