@@ -99,7 +99,7 @@ jobs:
           # exit so a cross-version landing is self-evident from the log alone.
           show_builder_state() {
             echo "== persistent builder state ($1) =="
-            for d in /github/home/.pyenv /github/home/.cache/bazel \
+            for d in /github/home/.pyenv/versions /github/home/.cache/bazel \
                      /github/home/pyenv /github/home/bazel; do
               printf '  %s: ' "$d"
               if [ -d "$d" ]; then ls -1 "$d" 2>/dev/null | tr '\n' ' '; else printf 'absent'; fi
