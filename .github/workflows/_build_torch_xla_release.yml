@@ -94,9 +94,8 @@ jobs:
 
           PY=${{ inputs.python_version }}
 
-          # This bug was invisible builder state: nothing in the log said which
-          # interpreter or Bazel base a job inherited. Record the inventory on entry and
-          # exit so a cross-version landing is self-evident from the log alone.
+          # Builders carry state between jobs, so log which interpreter trees and Bazel
+          # bases this job inherited and what it leaves for the next one.
           show_builder_state() {
             echo "== persistent builder state ($1) =="
             for d in /github/home/.pyenv/versions /github/home/.cache/bazel \
@@ -108,22 +107,16 @@ jobs:
           }
           show_builder_state inherited
 
-          # /github/home is a volume that persists across every job landing on this
-          # builder, and it holds both the pyenv trees and the Bazel output bases.
-          # Bazel's @local_config_python (pybind11_bazel's python_configure) bakes the
-          # absolute path of the local interpreter into its cached external repo and
-          # declares no dependency on the interpreter, so it is never re-fetched when the
-          # interpreter changes. The old layout installed every version's pyenv at the
-          # same path and deleted it at the end of the job, so a 3.11 job landing on a
-          # builder that had last built 3.12 aborted analysis with:
-          #   Inconsistent filesystem operations. /github/home/.pyenv/versions/3.12.13/bin
-          #   is no longer an existing directory.
-          # Give each interpreter its own pyenv tree and its own Bazel output base, at
-          # stable paths that are never deleted, so the versions cannot observe each
-          # other's state.
+          # /github/home persists across jobs on a builder. Bazel bakes the absolute path
+          # of the local interpreter into @local_config_python (pybind11_bazel's
+          # python_configure) and declares no dependency on it, so one Python version's
+          # state must never be reachable from another's build: each version gets its own
+          # pyenv tree and its own Bazel output base, at stable paths, never deleted.
+          # Removing either interpreter tree while a Bazel base still references it makes
+          # that base unusable.
 
-          # Reclaim the pre-fix shared state: dangling interpreter paths plus tens of GB
-          # of output that nothing references any more.
+          # Shared layout predating the per-version roots; a no-op once a builder has run
+          # this once.
           rm -rf /github/home/.pyenv /github/home/.cache/bazel
 
           export PYENV_ROOT="/github/home/pyenv/$PY"
@@ -137,8 +130,8 @@ jobs:
           pyenv global $PY
           ln -sf $(pyenv which python$PY) /usr/local/bin/python$PY
 
-          # Key the Bazel output base on the full interpreter version, so a pyenv patch
-          # bump gets a fresh base instead of leaving dangling paths in an existing one.
+          # Keyed on the full version, not the minor: a pyenv patch bump moves the
+          # interpreter path, and must therefore get its own base.
           PY_FULL=$(basename "$(python$PY -c 'import sys; print(sys.prefix)')")
           BAZEL_OUTPUT_USER_ROOT="/github/home/bazel/$PY_FULL"
           mkdir -p "$BAZEL_OUTPUT_USER_ROOT" && touch "$BAZEL_OUTPUT_USER_ROOT"
@@ -146,10 +139,9 @@ jobs:
           find /github/home/bazel -mindepth 1 -maxdepth 1 -type d -mtime +14 \
             -not -path "$BAZEL_OUTPUT_USER_ROOT" -exec rm -rf {} + || true
 
-          # Pin the hermetic interpreter explicitly. Otherwise XLA's python_repo.bzl
-          # infers it by shelling out to `python3 --version` (WORKSPACE passes
-          # default_python_version = "system"), which Bazel does not track and which
-          # depends on whatever pyenv's global setting happens to be.
+          # WORKSPACE passes default_python_version = "system", so without this XLA's
+          # python_repo.bzl infers the hermetic version from `python3 --version` — an
+          # input Bazel does not track. Pin it so the requirements lock is explicit.
           export HERMETIC_PYTHON_VERSION=$PY
 
           # Install essential packages for Python ${{ inputs.python_version }}
