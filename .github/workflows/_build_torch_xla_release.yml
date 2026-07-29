@@ -94,6 +94,20 @@ jobs:
 
           PY=${{ inputs.python_version }}
 
+          # This bug was invisible builder state: nothing in the log said which
+          # interpreter or Bazel base a job inherited. Record the inventory on entry and
+          # exit so a cross-version landing is self-evident from the log alone.
+          show_builder_state() {
+            echo "== persistent builder state ($1) =="
+            for d in /github/home/.pyenv /github/home/.cache/bazel \
+                     /github/home/pyenv /github/home/bazel; do
+              printf '  %s: ' "$d"
+              if [ -d "$d" ]; then ls -1 "$d" 2>/dev/null | tr '\n' ' '; else printf 'absent'; fi
+              echo
+            done
+          }
+          show_builder_state inherited
+
           # /github/home is a volume that persists across every job landing on this
           # builder, and it holds both the pyenv trees and the Bazel output bases.
           # Bazel's @local_config_python (pybind11_bazel's python_configure) bakes the
@@ -169,6 +183,8 @@ jobs:
           # Collect wheels
           mkdir -p /dist
           cp dist/*.whl /dist/
+
+          show_builder_state "left behind"
 
       - name: "Upload Wheels Artifact"
         id: upload
