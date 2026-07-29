@@ -94,17 +94,6 @@ jobs:
 
           PY=${{ inputs.python_version }}
 
-          show_builder_state() {
-            echo "== persistent builder state ($1) =="
-            for d in /github/home/.pyenv/versions /github/home/.cache/bazel \
-                     /github/home/pyenv /github/home/bazel; do
-              printf '  %s: ' "$d"
-              if [ -d "$d" ]; then ls -1 "$d" 2>/dev/null | tr '\n' ' '; else printf 'absent'; fi
-              echo
-            done
-          }
-          show_builder_state inherited
-
           # /github/home persists between jobs, and Bazel bakes absolute interpreter paths
           # into @local_config_python untracked. So: one pyenv tree and one Bazel base per
           # full interpreter version, never deleted, or the base referencing it breaks.
@@ -159,8 +148,6 @@ jobs:
           # Collect wheels
           mkdir -p /dist
           cp dist/*.whl /dist/
-
-          show_builder_state "left behind"
 
       - name: "Upload Wheels Artifact"
         id: upload
