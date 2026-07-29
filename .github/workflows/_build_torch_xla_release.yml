@@ -144,3 +144,8 @@ jobs:
       - name: Set artifact name output
         id: set_upload_name
         run: echo "artifact_name=${{ env.ARTIFACT_NAME }}" >> $GITHUB_OUTPUT
+
+      - name: "Release the builder's disk for the next job"
+        if: always()
+        shell: bash
+        run: rm -rf $HOME/.pyenv $HOME/.cache/bazel || true
