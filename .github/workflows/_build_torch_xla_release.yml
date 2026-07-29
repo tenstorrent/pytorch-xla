@@ -92,10 +92,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y curl git build-essential
 
-          # Bazel's @local_config_python caches the interpreter's absolute path and
-          # declares no dependency on it, so its output base must go whenever pyenv does.
-          # /github/home persists between jobs, so this runs at the start to be self-healing:
-          # a job that dies mid-build leaves both trees for the next job to clear.
+          # Bazel caches pyenv's absolute paths; clear the pair together, at the start.
           rm -rf $HOME/.pyenv $HOME/.cache/bazel
 
           curl https://pyenv.run | bash
@@ -105,8 +102,7 @@ jobs:
           pyenv global ${{ inputs.python_version }}
           ln -sf $(pyenv which python${{ inputs.python_version }}) /usr/local/bin/python${{ inputs.python_version }}
 
-          # Without this, python_repo.bzl infers the hermetic version from
-          # `python3 --version` -- an input Bazel does not track.
+          # Or python_repo.bzl infers it from `python3 --version`, which Bazel won't track.
           export HERMETIC_PYTHON_VERSION=${{ inputs.python_version }}
 
           # Install essential packages for Python ${{ inputs.python_version }}
