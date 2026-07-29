@@ -92,31 +92,22 @@ jobs:
         run: |
           apt-get update && apt-get install -y curl git build-essential
 
-          PY=${{ inputs.python_version }}
+          # Bazel's @local_config_python caches the interpreter's absolute path and
+          # declares no dependency on it, so its output base must go whenever pyenv does.
+          # /github/home persists between jobs, so this runs at the start to be self-healing:
+          # a job that dies mid-build leaves both trees for the next job to clear.
+          rm -rf $HOME/.pyenv $HOME/.cache/bazel
 
-          # /github/home persists between jobs, and Bazel bakes absolute interpreter paths
-          # into @local_config_python untracked. So: one pyenv tree and one Bazel base per
-          # full interpreter version, never deleted, or the base referencing it breaks.
-          export PYENV_ROOT="/github/home/pyenv/$PY"
-          export PATH="$PYENV_ROOT/bin:$PATH"
-          if [ ! -x "$PYENV_ROOT/bin/pyenv" ]; then
-            rm -rf "$PYENV_ROOT"
-            curl https://pyenv.run | bash
-          fi
+          curl https://pyenv.run | bash
+          export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
-          pyenv install -s $PY
-          pyenv global $PY
-          ln -sf $(pyenv which python$PY) /usr/local/bin/python$PY
+          pyenv install ${{ inputs.python_version }}
+          pyenv global ${{ inputs.python_version }}
+          ln -sf $(pyenv which python${{ inputs.python_version }}) /usr/local/bin/python${{ inputs.python_version }}
 
-          PY_FULL=$(basename "$(python$PY -c 'import sys; print(sys.prefix)')")
-          BAZEL_OUTPUT_USER_ROOT="/github/home/bazel/$PY_FULL"
-          mkdir -p "$BAZEL_OUTPUT_USER_ROOT" && touch "$BAZEL_OUTPUT_USER_ROOT"
-          # Bases untouched for two weeks; the mkdir/touch above keeps this one current.
-          find /github/home/bazel -mindepth 1 -maxdepth 1 -type d -mtime +14 \
-            -not -path "$BAZEL_OUTPUT_USER_ROOT" -exec rm -rf {} + || true
-
-          # Without this, python_repo.bzl infers it from `python3 --version`, untracked.
-          export HERMETIC_PYTHON_VERSION=$PY
+          # Without this, python_repo.bzl infers the hermetic version from
+          # `python3 --version` -- an input Bazel does not track.
+          export HERMETIC_PYTHON_VERSION=${{ inputs.python_version }}
 
           # Install essential packages for Python ${{ inputs.python_version }}
           python${{ inputs.python_version }} -m pip install --upgrade pip
@@ -141,9 +132,7 @@ jobs:
 
           # Build PyTorch/XLA
           cd xla/
-          # try-imported by .bazelrc; setup.py owns the bazel command line.
-          echo "startup --output_user_root=$BAZEL_OUTPUT_USER_ROOT" > .bazelrc.user
-          MAX_JOBS=8 BAZEL_JOBS=8 python$PY setup.py bdist_wheel
+          MAX_JOBS=8 BAZEL_JOBS=8 python${{ inputs.python_version }} setup.py bdist_wheel
 
           # Collect wheels
           mkdir -p /dist
