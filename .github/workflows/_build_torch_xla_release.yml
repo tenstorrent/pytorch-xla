@@ -115,10 +115,6 @@ jobs:
           # Removing either interpreter tree while a Bazel base still references it makes
           # that base unusable.
 
-          # Shared layout predating the per-version roots; a no-op once a builder has run
-          # this once.
-          rm -rf /github/home/.pyenv /github/home/.cache/bazel
-
           export PYENV_ROOT="/github/home/pyenv/$PY"
           export PATH="$PYENV_ROOT/bin:$PATH"
           if [ ! -x "$PYENV_ROOT/bin/pyenv" ]; then
