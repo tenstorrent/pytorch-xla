@@ -92,8 +92,8 @@ jobs:
         run: |
           apt-get update && apt-get install -y curl git build-essential
 
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
+          # Bazel caches pyenv's absolute paths; clear the pair together, at the start.
+          rm -rf $HOME/.pyenv $HOME/.cache/bazel
 
           curl https://pyenv.run | bash
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -101,6 +101,9 @@ jobs:
           pyenv install ${{ inputs.python_version }}
           pyenv global ${{ inputs.python_version }}
           ln -sf $(pyenv which python${{ inputs.python_version }}) /usr/local/bin/python${{ inputs.python_version }}
+
+          # Or python_repo.bzl infers it from `python3 --version`, which Bazel won't track.
+          export HERMETIC_PYTHON_VERSION=${{ inputs.python_version }}
 
           # Install essential packages for Python ${{ inputs.python_version }}
           python${{ inputs.python_version }} -m pip install --upgrade pip
@@ -131,9 +134,6 @@ jobs:
           mkdir -p /dist
           cp dist/*.whl /dist/
 
-          # Clean up any existing pyenv installation
-          rm -rf $HOME/.pyenv
-
       - name: "Upload Wheels Artifact"
         id: upload
         uses: actions/upload-artifact@v4
@@ -144,3 +144,8 @@ jobs:
       - name: Set artifact name output
         id: set_upload_name
         run: echo "artifact_name=${{ env.ARTIFACT_NAME }}" >> $GITHUB_OUTPUT
+
+      - name: "Release the builder's disk for the next job"
+        if: always()
+        shell: bash
+        run: rm -rf $HOME/.pyenv $HOME/.cache/bazel || true
