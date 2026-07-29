@@ -94,8 +94,6 @@ jobs:
 
           PY=${{ inputs.python_version }}
 
-          # Builders carry state between jobs, so log which interpreter trees and Bazel
-          # bases this job inherited and what it leaves for the next one.
           show_builder_state() {
             echo "== persistent builder state ($1) =="
             for d in /github/home/.pyenv/versions /github/home/.cache/bazel \
@@ -107,14 +105,9 @@ jobs:
           }
           show_builder_state inherited
 
-          # /github/home persists across jobs on a builder. Bazel bakes the absolute path
-          # of the local interpreter into @local_config_python (pybind11_bazel's
-          # python_configure) and declares no dependency on it, so one Python version's
-          # state must never be reachable from another's build: each version gets its own
-          # pyenv tree and its own Bazel output base, at stable paths, never deleted.
-          # Removing either interpreter tree while a Bazel base still references it makes
-          # that base unusable.
-
+          # /github/home persists between jobs, and Bazel bakes absolute interpreter paths
+          # into @local_config_python untracked. So: one pyenv tree and one Bazel base per
+          # full interpreter version, never deleted, or the base referencing it breaks.
           export PYENV_ROOT="/github/home/pyenv/$PY"
           export PATH="$PYENV_ROOT/bin:$PATH"
           if [ ! -x "$PYENV_ROOT/bin/pyenv" ]; then
@@ -126,18 +119,14 @@ jobs:
           pyenv global $PY
           ln -sf $(pyenv which python$PY) /usr/local/bin/python$PY
 
-          # Keyed on the full version, not the minor: a pyenv patch bump moves the
-          # interpreter path, and must therefore get its own base.
           PY_FULL=$(basename "$(python$PY -c 'import sys; print(sys.prefix)')")
           BAZEL_OUTPUT_USER_ROOT="/github/home/bazel/$PY_FULL"
           mkdir -p "$BAZEL_OUTPUT_USER_ROOT" && touch "$BAZEL_OUTPUT_USER_ROOT"
-          # Drop bases unused for two weeks so patch bumps do not pile up on the builder.
+          # Bases untouched for two weeks; the mkdir/touch above keeps this one current.
           find /github/home/bazel -mindepth 1 -maxdepth 1 -type d -mtime +14 \
             -not -path "$BAZEL_OUTPUT_USER_ROOT" -exec rm -rf {} + || true
 
-          # WORKSPACE passes default_python_version = "system", so without this XLA's
-          # python_repo.bzl infers the hermetic version from `python3 --version` — an
-          # input Bazel does not track. Pin it so the requirements lock is explicit.
+          # Without this, python_repo.bzl infers it from `python3 --version`, untracked.
           export HERMETIC_PYTHON_VERSION=$PY
 
           # Install essential packages for Python ${{ inputs.python_version }}
@@ -163,8 +152,7 @@ jobs:
 
           # Build PyTorch/XLA
           cd xla/
-          # .bazelrc try-imports this; it is the only way to reach a startup option,
-          # since setup.py owns the bazel command line.
+          # try-imported by .bazelrc; setup.py owns the bazel command line.
           echo "startup --output_user_root=$BAZEL_OUTPUT_USER_ROOT" > .bazelrc.user
           MAX_JOBS=8 BAZEL_JOBS=8 python$PY setup.py bdist_wheel
 
