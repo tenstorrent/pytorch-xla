@@ -74,7 +74,7 @@ std::unique_ptr<TslProfilerSessionWrapper> TslProfilerSessionWrapper::Create() {
 absl::Status Trace(
     const char* service_addr, const char* logdir, int duration_ms,
     int num_tracing_attempts,
-    const absl::flat_hash_map<std::string, std::variant<int, std::string>>&
+    const absl::flat_hash_map<std::string, std::variant<bool, int, std::string>>&
         options) {
   return tsl::profiler::CaptureRemoteTrace(
       service_addr, logdir, /*worker_list=*/"",
