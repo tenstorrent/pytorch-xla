@@ -138,15 +138,86 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
 
-# Even though we don't support XLA:CUDA, we still need @local_config_cuda so
-# that XLA BUILD files loading `@local_config_cuda//cuda:build_defs.bzl`
-# (if_cuda) resolve. With TF_NEED_CUDA unset this creates a dummy (no-CUDA)
-# repository. In XLA 131bf41a the non-hermetic `third_party/gpus:cuda_configure`
-# rule was removed; use the hermetic one. nccl is now initialized inside
-# xla_workspace2(), so no separate nccl_configure call is needed.
+# Hermetic CUDA / NCCL / nvSHMEM setup, mirroring openxla/xla's WORKSPACE for
+# this XLA revision. Even though we build CPU-only, XLA BUILD files pervasively
+# load @local_config_cuda and @local_config_nccl (if_cuda/if_nccl), so these
+# repositories must be defined; with CUDA disabled they resolve to dummy
+# (no-CUDA) repositories. In XLA 131bf41a this setup moved to
+# @rules_ml_toolchain//gpu/... and cuda_configure now requires the CUDA redist
+# repositories (@cuda_cudart, @cuda_nvtx, ...) to be defined first.
 load(
-    "@xla//third_party/gpus/cuda/hermetic:cuda_configure.bzl",
+    "@rules_ml_toolchain//gpu/cuda:cuda_json_init_repository.bzl",
+    "cuda_json_init_repository",
+)
+
+cuda_json_init_repository()
+
+load(
+    "@cuda_redist_json//:distributions.bzl",
+    "CUDA_REDISTRIBUTIONS",
+    "CUDNN_REDISTRIBUTIONS",
+)
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_init_repositories.bzl",
+    "cuda_redist_init_repositories",
+    "cudnn_redist_init_repository",
+)
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_versions.bzl",
+    "REDIST_VERSIONS_TO_BUILD_TEMPLATES",
+)
+load(
+    "@xla//third_party/cccl:workspace.bzl",
+    "CCCL_3_2_0_DIST_DICT",
+    "CCCL_GITHUB_VERSIONS_TO_BUILD_TEMPLATES",
+)
+
+cuda_redist_init_repositories(
+    cuda_redistributions = CUDA_REDISTRIBUTIONS | CCCL_3_2_0_DIST_DICT,
+    redist_versions_to_build_templates = REDIST_VERSIONS_TO_BUILD_TEMPLATES | CCCL_GITHUB_VERSIONS_TO_BUILD_TEMPLATES,
+)
+
+cudnn_redist_init_repository(
+    cudnn_redistributions = CUDNN_REDISTRIBUTIONS,
+)
+
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_configure.bzl",
     "cuda_configure",
 )
 
 cuda_configure(name = "local_config_cuda")
+
+load(
+    "@rules_ml_toolchain//gpu/nccl:nccl_redist_init_repository.bzl",
+    "nccl_redist_init_repository",
+)
+
+nccl_redist_init_repository()
+
+load(
+    "@rules_ml_toolchain//gpu/nccl:nccl_configure.bzl",
+    "nccl_configure",
+)
+
+nccl_configure(name = "local_config_nccl")
+
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_json_init_repository.bzl",
+    "nvshmem_json_init_repository",
+)
+
+nvshmem_json_init_repository()
+
+load(
+    "@nvshmem_redist_json//:distributions.bzl",
+    "NVSHMEM_REDISTRIBUTIONS",
+)
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_redist_init_repository.bzl",
+    "nvshmem_redist_init_repository",
+)
+
+nvshmem_redist_init_repository(
+    nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
+)
