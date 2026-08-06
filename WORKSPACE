@@ -79,6 +79,20 @@ http_archive(
 #    path = "/path/to/openxla",
 # )
 
+# Initialize OpenXLA's external dependencies. There is a specific order in
+# which these dependencies are initialized, because for bazel it's the first
+# definition that takes precedence. Newer OpenXLA (jax 0.11 era) defines
+# @rules_ml_toolchain in workspace4/workspace3, and the hermetic Python setup
+# below transitively depends on it, so workspace4/3 must run first. We follow
+# what openxla/xla and upstream pytorch/xla do exactly.
+load("@xla//:workspace4.bzl", "xla_workspace4")
+
+xla_workspace4()
+
+load("@xla//:workspace3.bzl", "xla_workspace3")
+
+xla_workspace3()
+
 # Initialize hermetic Python
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 
@@ -110,17 +124,6 @@ python_init_pip()
 load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
-
-
-
-# Initialize OpenXLA's external dependencies.
-load("@xla//:workspace4.bzl", "xla_workspace4")
-
-xla_workspace4()
-
-load("@xla//:workspace3.bzl", "xla_workspace3")
-
-xla_workspace3()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
