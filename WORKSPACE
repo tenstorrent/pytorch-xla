@@ -93,6 +93,30 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
 
+load("@bazel_features//:deps.bzl", "bazel_features_deps")
+
+bazel_features_deps()
+
+# Initialize hermetic C++ toolchain. Newer OpenXLA (jax 0.11 era) compiles with
+# the rules_ml_toolchain hermetic clang instead of an autodetected system
+# compiler; cc_toolchain_deps() defines @llvm_linux_x86_64 (and friends) that
+# the workspace2 cc configuration transitively loads.
+load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
+
+cc_toolchain_deps()
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_cuda")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_sycl")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_rocm")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_aarch64_linux_aarch64")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_aarch64_linux_aarch64_cuda")
+
 # Initialize hermetic Python
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 
