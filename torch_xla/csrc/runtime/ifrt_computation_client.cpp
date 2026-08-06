@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "absl/strings/ascii.h"
+#include "absl/strings/str_split.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
 #include "torch_xla/csrc/runtime/computation_client.h"

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "absl/strings/ascii.h"
+#include "absl/strings/str_split.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
 #include "torch_xla/csrc/runtime/computation_client.h"
@@ -29,6 +30,7 @@
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_future.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/shape.h"
 

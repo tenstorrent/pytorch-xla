@@ -115,13 +115,13 @@ class PjRtComputationClient : public ComputationClient {
   absl::StatusOr<xla::PjRtDevice*> LookupAddressableDevice(
       int local_device_id) const override {
     return client_->LookupAddressableDevice(
-        xla::PjRtLocalDeviceId(local_device_id));
+        xla::LocalDeviceId(local_device_id));
   }
 
   std::intptr_t GetCudaStreamForDevice(int local_device_id) const override {
     absl::StatusOr<xla::PjRtDevice*> pjrt_device =
         client_->LookupAddressableDevice(
-            xla::PjRtLocalDeviceId(local_device_id));
+            xla::LocalDeviceId(local_device_id));
     XLA_CHECK(pjrt_device.ok()) << "Failed to get a PjRt device.";
     absl::StatusOr<std::intptr_t> stream =
         pjrt_device.value()->GetStreamForExternalReadyEvents();
