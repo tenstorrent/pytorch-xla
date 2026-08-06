@@ -138,16 +138,15 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
 
+# Even though we don't support XLA:CUDA, we still need @local_config_cuda so
+# that XLA BUILD files loading `@local_config_cuda//cuda:build_defs.bzl`
+# (if_cuda) resolve. With TF_NEED_CUDA unset this creates a dummy (no-CUDA)
+# repository. In XLA 131bf41a the non-hermetic `third_party/gpus:cuda_configure`
+# rule was removed; use the hermetic one. nccl is now initialized inside
+# xla_workspace2(), so no separate nccl_configure call is needed.
 load(
-    "@xla//third_party/gpus:cuda_configure.bzl",
+    "@xla//third_party/gpus/cuda/hermetic:cuda_configure.bzl",
     "cuda_configure",
 )
 
 cuda_configure(name = "local_config_cuda")
-
-load(
-    "@xla//third_party/nccl:nccl_configure.bzl",
-    "nccl_configure",
-)
-
-nccl_configure(name = "local_config_nccl")
