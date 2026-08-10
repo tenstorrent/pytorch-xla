@@ -30,7 +30,7 @@
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/pjrt/pjrt_future.h"
+#include "xla/future.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/shape.h"
 
@@ -71,11 +71,12 @@ torch::lazy::hash_t hash_comp_env(
   if (topology_desc.ok()) {
     // Some backends support a topology description which provides a better
     // view of the specific compilation environment.
-    auto serialized = topology_desc.value()->Serialize();
-    if (serialized.ok()) {
+    auto topology_proto = topology_desc.value()->ToProto();
+    if (topology_proto.ok()) {
+      std::string serialized = topology_proto->SerializeAsString();
       return torch::lazy::HashCombine(
           hash,
-          torch::lazy::DataHash(serialized->data(), serialized->length()));
+          torch::lazy::DataHash(serialized.data(), serialized.length()));
     }
     // If serialization fails, fallthrough to the manual approach.
   }
@@ -574,7 +575,7 @@ std::vector<xla::Literal> PjRtComputationClient::TransferFromDevice(
     }
   }
 
-  std::vector<xla::PjRtFuture<>> futures;
+  std::vector<xla::Future<>> futures;
   futures.reserve(total_transfers);
   std::vector<xla::Literal> global_literals;
   global_literals.reserve(total_transfers);
@@ -769,7 +770,9 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       executable = util::RaisePythonValueErrorOnFailure([&] {
         return fake_xla_compile_
                    ? fake_xla_compile_()
-                   : client_->CompileAndLoad(mlir_module, compile_options);
+                   : client_->CompileAndLoad(
+                         xla::MaybeOwningMlirModule(mlir_module),
+                         compile_options);
       });
       StableHloCompileCounter()->AddValue(1);
     } else {
@@ -885,7 +888,6 @@ PjRtComputationClient::ExecuteComputation(
   }
 
   xla::ExecuteOptions execute_options;
-  execute_options.untuple_result = options.explode_tuple;
   execute_options.strict_shape_checking = false;
 
   // Required as of cl/518733871
@@ -896,7 +898,7 @@ PjRtComputationClient::ExecuteComputation(
   TF_VLOG(5) << "ExecuteComputation acquiring PJRT device lock for " << device
              << " Done";
 
-  std::optional<xla::PjRtFuture<>> returned_future;
+  std::optional<xla::Future<>> returned_future;
   std::vector<std::unique_ptr<xla::PjRtBuffer>> results =
       pjrt_computation.executable
           ->ExecuteSharded(buffers, pjrt_device, execute_options,
@@ -979,7 +981,6 @@ PjRtComputationClient::ExecuteReplicated(
   }
 
   xla::ExecuteOptions execute_options;
-  execute_options.untuple_result = options.explode_tuple;
   execute_options.strict_shape_checking = true;
   // TODO(yeounoh) currently only support single-slice execution
   execute_options.multi_slice_config = nullptr;
@@ -996,8 +997,8 @@ PjRtComputationClient::ExecuteReplicated(
   TF_VLOG(5) << "ExecuteReplicated acquiring PJRT device lock for "
              << spmd_device_str << " Done";
 
-  std::optional<std::vector<xla::PjRtFuture<>>> returned_futures =
-      std::vector<xla::PjRtFuture<>>();
+  std::optional<std::vector<xla::Future<>>> returned_futures =
+      std::vector<xla::Future<>>();
   std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results;
   {
     tsl::profiler::TraceMe activity(
@@ -1193,7 +1194,20 @@ void PjRtComputationClient::RegisterCustomCall(const std::string& fn_name,
   PJRT_Error* error =
       reinterpret_cast<const PJRT_Gpu_Custom_Call*>(next)->custom_call(&args);
   if (error) {
-    XLA_ERROR() << error->status;
+    // PJRT_Error is opaque in the PJRT C API; retrieve its message through the
+    // API and free it rather than reaching into a (no-longer-existent) member.
+    PJRT_Error_Message_Args message_args;
+    message_args.struct_size = PJRT_Error_Message_Args_STRUCT_SIZE;
+    message_args.extension_start = nullptr;
+    message_args.error = error;
+    pjrt_api->PJRT_Error_Message(&message_args);
+    std::string error_message(message_args.message, message_args.message_size);
+    PJRT_Error_Destroy_Args destroy_args;
+    destroy_args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
+    destroy_args.extension_start = nullptr;
+    destroy_args.error = error;
+    pjrt_api->PJRT_Error_Destroy(&destroy_args);
+    XLA_ERROR() << error_message;
   }
 }
 

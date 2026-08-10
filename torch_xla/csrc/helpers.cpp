@@ -1076,7 +1076,9 @@ std::vector<xla::HloSharding> XlaHelpers::ExtractInputShardings(
       XLA_CHECK_EQ(index, param_shardings.size());
       param_shardings.push_back(*xla::HloSharding::FromProto(instr.sharding()));
       TF_VLOG(5) << "index = " << index
-                 << " shape = " << xla::Shape(instr.shape()).ToString()
+                 << " shape = "
+                 << GetValueOrThrow(xla::Shape::FromProto(instr.shape()))
+                        .ToString()
                  << " sharding = "
                  << xla::HloSharding::FromProto(instr.sharding())->ToString();
     }

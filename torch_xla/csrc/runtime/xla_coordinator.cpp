@@ -20,9 +20,14 @@ absl::Status XlaCoordinator::Initialize(int global_rank, int world_size,
     // https://github.com/openxla/xla/blob/4b88636002bc5834d7fe3f862997c66a490987bc/xla/pjrt/distributed/client.h#L63-L72.
     int heartbeat_interval_sec =
         sys_util::GetEnvInt(env::kEnvDistSvcHeartbeatIntervalInSec, 10);
-    service_options.heartbeat_interval = absl::Seconds(heartbeat_interval_sec);
-    service_options.max_missing_heartbeats =
+    int max_missing_heartbeats =
         sys_util::GetEnvInt(env::kEnvDistSvcMaxMissingHeartbeats, 10);
+    // The service concludes a client has vanished once it hasn't received any
+    // heartbeats within this timeout. The coordination service now takes the
+    // combined timeout directly instead of a heartbeat interval and a maximum
+    // number of missed heartbeats.
+    service_options.heartbeat_timeout =
+        absl::Seconds(heartbeat_interval_sec) * max_missing_heartbeats;
     int shutdown_timeout =
         sys_util::GetEnvInt(env::kEnvDistSvcShutdownTimeoutInMin, 5);
     service_options.shutdown_timeout = absl::Minutes(shutdown_timeout);
@@ -74,7 +79,7 @@ std::shared_ptr<xla::DistributedRuntimeClient> XlaCoordinator::GetClient() {
 
 void XlaCoordinator::ActivatePreemptionSyncManager() {
   if (preemption_sync_manager_ == nullptr) {
-    preemption_sync_manager_ = std::move(tsl::CreatePreemptionSyncManager());
+    preemption_sync_manager_ = std::move(xla::CreatePreemptionSyncManager());
     auto client = dist_runtime_client_->GetCoordinationServiceAgent();
     XLA_CHECK(client.ok()) << "Failed to retrieve the CoodinationServiceAgent";
     auto status = preemption_sync_manager_->Initialize(client.value());

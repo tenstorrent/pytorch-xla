@@ -4,6 +4,7 @@
 #include "torch_xla/csrc/ops/infer_output_shape.h"
 #include "torch_xla/csrc/ops/xla_ops.h"
 #include "torch_xla/csrc/runtime/util.h"
+#include "torch_xla/csrc/status.h"
 
 namespace torch_xla {
 namespace ir {
@@ -29,7 +30,7 @@ Recv::Recv(const torch::lazy::Value& token, const xla::Shape& recv_shape,
           [&]() { return NodeOutputShape(token, recv_shape, channel_id); },
           /*num_outputs=*/2,
           torch::lazy::MHash(channel_id, recv_shape.ToString())),
-      recv_shape_(recv_shape.ToProto()),
+      recv_shape_(GetValueOrThrow(xla::Shape::FromProto(recv_shape.ToProto()))),
       channel_id_(channel_id) {}
 
 torch::lazy::NodePtr Recv::Clone(torch::lazy::OpList operands) const {

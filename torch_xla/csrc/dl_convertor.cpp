@@ -143,7 +143,7 @@ DLManagedTensor* toDLPack(const at::Tensor& input) {
     // AcquireExternalReference may block
     pack->external_reference =
         GetValueOrThrow(pjrt_buffer->AcquireExternalReference());
-    xla::PjRtFuture<> future = pjrt_buffer->GetReadyFuture();
+    xla::Future<> future = pjrt_buffer->GetReadyFuture();
     MaybeThrow(future.Await());
   }
   pack->buffer_reference = pjrt_buffer;

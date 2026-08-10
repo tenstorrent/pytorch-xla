@@ -138,8 +138,11 @@ InitializePjRt(const std::string& device_type) {
     TF_VLOG(1) << "Initializing PjRt CPU client...";
     bool async = sys_util::GetEnvBool(env::kEnvPjrtAsyncCpuClient, true);
     int cpu_device_count = sys_util::GetEnvInt(env::kEnvNumCpu, 1);
+    xla::CpuClientOptions cpu_options;
+    cpu_options.asynchronous = async;
+    cpu_options.cpu_device_count = cpu_device_count;
     XLA_ASSIGN_OR_RETURN(client,
-                         xla::GetPjRtCpuClient(async, cpu_device_count));
+                         xla::GetXlaPjrtCpuClient(std::move(cpu_options)));
   } else if (device_type == "TPU") {
     TF_VLOG(1) << "Initializing TFRT TPU client...";
     // Init the absl logging to avoid the log spam.
