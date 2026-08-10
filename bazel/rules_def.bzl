@@ -14,6 +14,8 @@ def ptxla_cc_library(
         deps = deps + [
             "@torch//:headers",
             "@torch//:runtime_headers",
+            "@torch//:source_headers",
+            "//bazel:multiarch_pyconfig",
         ],
         **kwargs
     )

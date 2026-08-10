@@ -133,6 +133,7 @@ cc_library(
         "@xla//xla:shape_util",
         "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_future",
         "@xla//xla/pjrt/c:pjrt_c_api_gpu_extension_hdrs",
         "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
         "@xla//xla/pjrt/c:pjrt_c_api_wrapper_impl",
@@ -255,7 +256,7 @@ cc_library(
         ":env_vars",
         "//torch_xla/csrc:status",
         "@com_google_absl//absl/base:nullability",
-        "@xla//xla/tsl/distributed_runtime/preemption:preemption_sync_manager",
+        "@xla//xla/pjrt/distributed/preemption:preemption_sync_manager",
         "@xla//xla/pjrt/distributed",
     ],
 )
