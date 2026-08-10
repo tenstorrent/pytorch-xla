@@ -22,10 +22,6 @@ absl::Status XlaCoordinator::Initialize(int global_rank, int world_size,
         sys_util::GetEnvInt(env::kEnvDistSvcHeartbeatIntervalInSec, 10);
     int max_missing_heartbeats =
         sys_util::GetEnvInt(env::kEnvDistSvcMaxMissingHeartbeats, 10);
-    // The service concludes a client has vanished once it hasn't received any
-    // heartbeats within this timeout. The coordination service now takes the
-    // combined timeout directly instead of a heartbeat interval and a maximum
-    // number of missed heartbeats.
     service_options.heartbeat_timeout =
         absl::Seconds(heartbeat_interval_sec) * max_missing_heartbeats;
     int shutdown_timeout =
