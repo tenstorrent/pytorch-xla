@@ -30,7 +30,7 @@ build --copt=-fexceptions
 # Force GCC because clang/bazel has issues.
 build --action_env=CC=gcc
 build --action_env=CXX=g++
-build --spawn_strategy=standalone
+build --spawn_strategy=sandboxed
 
 # TODO(https://github.com/pytorch/xla/issues/9336): Enable bzlmod.
 build --noenable_bzlmod

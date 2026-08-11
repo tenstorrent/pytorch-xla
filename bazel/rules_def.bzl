@@ -10,11 +10,10 @@ def ptxla_cc_library(
         copts = [],
         **kwargs):
     native.cc_library(
-        copts = copts + ["-isystemexternal/torch"],  # Required for system includes.
+        copts = copts,
         deps = deps + [
             "@torch//:headers",
             "@torch//:runtime_headers",
-            "@torch//:source_headers",
             "//bazel:multiarch_pyconfig",
         ],
         **kwargs
@@ -26,9 +25,7 @@ def ptxla_cc_test(
         **kwargs):
     xla_cc_test(
         linkstatic = True,
-        copts = copts + [
-            "-isystemexternal/torch",  # Required for system includes.
-        ],
+        copts = copts,
         deps = deps + [
             "@pybind11//:pybind11_embed",  # libpython
             "@torch//:headers",

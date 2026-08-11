@@ -38,9 +38,6 @@ cc_library(
     hdrs = [
         "computation_client.h",
     ],
-    copts = [
-        "-isystemexternal/torch",
-    ],
     deps = [
         ":debug_macros",
         ":env_vars",

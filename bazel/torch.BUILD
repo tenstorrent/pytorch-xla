@@ -20,26 +20,6 @@ cc_library(
     strip_include_prefix = "torch/include/torch/csrc/api/include",
 )
 
-# In-tree PyTorch headers (c10/, caffe2/, torch/csrc/, aten/) reached via the
-# `-isystem external/torch` copt are declared by no cc_library, so the strict
-# include validator rejects them. Declare them here; they are hardlinked to
-# torch/include/ by the PyTorch build, so declaring both is inode-safe.
-cc_library(
-    name = "source_headers",
-    hdrs = glob(
-        [
-            "c10/**/*.h",
-            "caffe2/**/*.h",
-            "torch/csrc/**/*.h",
-            "aten/src/**/*.h",
-        ],
-        allow_empty = True,
-    ),
-    # `includes` (not just `hdrs`) is required: it registers external/torch as
-    # the include dir the validator matches these headers against.
-    includes = ["."],
-)
-
 filegroup(
     name = "torchgen_deps",
     srcs = [
