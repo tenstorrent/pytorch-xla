@@ -30,7 +30,12 @@ build --copt=-fexceptions
 # Force GCC because clang/bazel has issues.
 build --action_env=CC=gcc
 build --action_env=CXX=g++
-build --spawn_strategy=sandboxed
+build --spawn_strategy=standalone
+# Sandbox only C++ compiles so the undeclared PyTorch source tree is invisible to
+# the compiler (torch quote-includes then resolve to torch/include, not the source
+# copies -> no duplicate-inode redefinitions). Genrules stay on the default
+# strategy; some (e.g. @local_config_python) cannot run sandboxed.
+build --strategy=CppCompile=sandboxed
 
 # TODO(https://github.com/pytorch/xla/issues/9336): Enable bzlmod.
 build --noenable_bzlmod
