@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "torch_xla/csrc/device.h"
@@ -124,7 +125,7 @@ class LoweringContext : public torch::lazy::LoweringContext {
   };
 
   // Reports an XLA builder error for the given node.
-  TF_ATTRIBUTE_NORETURN void ReportBuilderError(const torch::lazy::Node& node,
+  ABSL_ATTRIBUTE_NORETURN void ReportBuilderError(const torch::lazy::Node& node,
                                                 absl::string_view error_msg);
 
   xla::XlaBuilder builder_;

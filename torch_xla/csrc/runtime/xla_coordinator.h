@@ -5,7 +5,7 @@
 
 #include "absl/base/nullability.h"
 #include "xla/pjrt/distributed/distributed.h"
-#include "xla/tsl/distributed_runtime/preemption/preemption_sync_manager.h"
+#include "xla/pjrt/distributed/preemption/preemption_sync_manager.h"
 
 namespace torch_xla {
 namespace runtime {
@@ -69,7 +69,7 @@ class XlaCoordinator {
 
   std::unique_ptr<xla::DistributedRuntimeService> dist_runtime_service_;
   std::shared_ptr<xla::DistributedRuntimeClient> dist_runtime_client_;
-  std::unique_ptr<tsl::PreemptionSyncManager> preemption_sync_manager_;
+  std::unique_ptr<xla::PreemptionSyncManager> preemption_sync_manager_;
 };
 
 }  // namespace runtime

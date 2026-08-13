@@ -46,7 +46,7 @@ new_local_repository(
 
 # To build PyTorch/XLA with a new revison of OpenXLA, update the xla_hash to
 # the openxla git commit hash and note the date of the commit.
-xla_hash = '3d5ece64321630dade7ff733ae1353fc3c83d9cc'  # Committed on 2025-06-17.
+xla_hash = '131bf41acb4650e4391a640c3f1859c1c86ad74b'  # Committed on 2026-07-16. (jaxlib 0.11.0)
 
 http_archive(
     name = "xla",
@@ -56,8 +56,6 @@ http_archive(
     ],
     patch_tool = "patch",
     patches = [
-        "//openxla_patches:gpu_nvml.diff",
-        "//openxla_patches:gpu_race_condition.diff",
         "//openxla_patches:count_down.diff",
     ],
     strip_prefix = "xla-" + xla_hash,
@@ -80,6 +78,44 @@ http_archive(
 #    name = "xla",
 #    path = "/path/to/openxla",
 # )
+
+# Initialize OpenXLA's external dependencies. There is a specific order in
+# which these dependencies are initialized, because for bazel it's the first
+# definition that takes precedence. Newer OpenXLA (jax 0.11 era) defines
+# @rules_ml_toolchain in workspace4/workspace3, and the hermetic Python setup
+# below transitively depends on it, so workspace4/3 must run first. We follow
+# what openxla/xla and upstream pytorch/xla do exactly.
+load("@xla//:workspace4.bzl", "xla_workspace4")
+
+xla_workspace4()
+
+load("@xla//:workspace3.bzl", "xla_workspace3")
+
+xla_workspace3()
+
+load("@bazel_features//:deps.bzl", "bazel_features_deps")
+
+bazel_features_deps()
+
+# Initialize hermetic C++ toolchain. Newer OpenXLA (jax 0.11 era) compiles with
+# the rules_ml_toolchain hermetic clang instead of an autodetected system
+# compiler; cc_toolchain_deps() defines @llvm_linux_x86_64 (and friends) that
+# the workspace2 cc configuration transitively loads.
+load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
+
+cc_toolchain_deps()
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_cuda")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_sycl")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_x86_64_linux_x86_64_rocm")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_aarch64_linux_aarch64")
+
+register_toolchains("@rules_ml_toolchain//cc:linux_aarch64_linux_aarch64_cuda")
 
 # Initialize hermetic Python
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
@@ -113,17 +149,6 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
-
-
-# Initialize OpenXLA's external dependencies.
-load("@xla//:workspace4.bzl", "xla_workspace4")
-
-xla_workspace4()
-
-load("@xla//:workspace3.bzl", "xla_workspace3")
-
-xla_workspace3()
-
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
@@ -137,16 +162,86 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 xla_workspace0()
 
 
+# Hermetic CUDA / NCCL / nvSHMEM setup, mirroring openxla/xla's WORKSPACE for
+# this XLA revision. Even though we build CPU-only, XLA BUILD files pervasively
+# load @local_config_cuda and @local_config_nccl (if_cuda/if_nccl), so these
+# repositories must be defined; with CUDA disabled they resolve to dummy
+# (no-CUDA) repositories. In XLA 131bf41a this setup moved to
+# @rules_ml_toolchain//gpu/... and cuda_configure now requires the CUDA redist
+# repositories (@cuda_cudart, @cuda_nvtx, ...) to be defined first.
 load(
-    "@xla//third_party/gpus:cuda_configure.bzl",
+    "@rules_ml_toolchain//gpu/cuda:cuda_json_init_repository.bzl",
+    "cuda_json_init_repository",
+)
+
+cuda_json_init_repository()
+
+load(
+    "@cuda_redist_json//:distributions.bzl",
+    "CUDA_REDISTRIBUTIONS",
+    "CUDNN_REDISTRIBUTIONS",
+)
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_init_repositories.bzl",
+    "cuda_redist_init_repositories",
+    "cudnn_redist_init_repository",
+)
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_versions.bzl",
+    "REDIST_VERSIONS_TO_BUILD_TEMPLATES",
+)
+load(
+    "@xla//third_party/cccl:workspace.bzl",
+    "CCCL_3_2_0_DIST_DICT",
+    "CCCL_GITHUB_VERSIONS_TO_BUILD_TEMPLATES",
+)
+
+cuda_redist_init_repositories(
+    cuda_redistributions = CUDA_REDISTRIBUTIONS | CCCL_3_2_0_DIST_DICT,
+    redist_versions_to_build_templates = REDIST_VERSIONS_TO_BUILD_TEMPLATES | CCCL_GITHUB_VERSIONS_TO_BUILD_TEMPLATES,
+)
+
+cudnn_redist_init_repository(
+    cudnn_redistributions = CUDNN_REDISTRIBUTIONS,
+)
+
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_configure.bzl",
     "cuda_configure",
 )
 
 cuda_configure(name = "local_config_cuda")
 
 load(
-    "@xla//third_party/nccl:nccl_configure.bzl",
+    "@rules_ml_toolchain//gpu/nccl:nccl_redist_init_repository.bzl",
+    "nccl_redist_init_repository",
+)
+
+nccl_redist_init_repository()
+
+load(
+    "@rules_ml_toolchain//gpu/nccl:nccl_configure.bzl",
     "nccl_configure",
 )
 
 nccl_configure(name = "local_config_nccl")
+
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_json_init_repository.bzl",
+    "nvshmem_json_init_repository",
+)
+
+nvshmem_json_init_repository()
+
+load(
+    "@nvshmem_redist_json//:distributions.bzl",
+    "NVSHMEM_REDISTRIBUTIONS",
+)
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_redist_init_repository.bzl",
+    "nvshmem_redist_init_repository",
+)
+
+nvshmem_redist_init_repository(
+    nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
+)

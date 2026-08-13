@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "absl/strings/ascii.h"
+#include "absl/strings/str_split.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
 #include "torch_xla/csrc/runtime/computation_client.h"
@@ -86,13 +87,14 @@ torch::lazy::hash_t hash_comp_env(
   if (topology_desc.ok()) {
     // Some backends support a topology description which provides a better
     // view of the specific compilation environment.
-    auto serialized = topology_desc.value()->Serialize();
-    if (serialized.ok()) {
+    auto fingerprint = topology_desc.value()->Fingerprint();
+    if (fingerprint.ok()) {
+      uint64_t fingerprint_value = *fingerprint;
       return torch::lazy::HashCombine(
-          hash,
-          torch::lazy::DataHash(serialized->data(), serialized->length()));
+          hash, torch::lazy::DataHash(&fingerprint_value,
+                                      sizeof(fingerprint_value)));
     }
-    // If serialization fails, fallthrough to the manual approach.
+    // If fingerprinting fails, fallthrough to the manual approach.
   }
   return hash;
 }
@@ -217,7 +219,8 @@ std::vector<ComputationClient::DataPtr> IfrtComputationClient::GetDataShards(
     std::vector<tsl::RCReference<xla::ifrt::Array>> arrays =
         ifrt_data->buffer
             ->DisassembleIntoSingleDeviceArrays(
-                xla::ifrt::ArrayCopySemantics::kAlwaysCopy)
+                xla::ifrt::ArrayCopySemantics::kAlwaysCopy,
+                xla::ifrt::SingleDeviceShardSemantics::kAddressableShards)
             .value();
 
     for (auto array : arrays) {
@@ -305,10 +308,10 @@ std::vector<ComputationClient::DataPtr> IfrtComputationClient::TransferToDevice(
                 // TODO: what is MemoryKind?
                 xla::ifrt::SingleDeviceSharding::Create(
                     ifrt_device, xla::ifrt::MemoryKind()),
+                /*layout=*/nullptr,
                 xla::ifrt::Client::HostBufferSemantics::
                     kImmutableUntilTransferCompletes,
-                [tensor, timed]() { /* frees tensor and timer */ },
-                client_->CreateUserContext())
+                [tensor, timed]() { /* frees tensor and timer */ })
             .value();
 
     ComputationClient::DataPtr data =
@@ -516,10 +519,13 @@ std::vector<ComputationClient::ComputationPtr> IfrtComputationClient::Compile(
     torch_xla::ConvertHloToStableHlo(instance.computation.mutable_proto(),
                                      &mlir_module);
     std::shared_ptr<xla::ifrt::LoadedExecutable> executable =
-        GetValueOrThrow(client_->GetDefaultCompiler()->CompileAndLoad(
-            std::make_unique<xla::ifrt::HloProgram>(mlir_module),
-            std::make_unique<xla::ifrt::XlaCompileOptions>(compile_options,
-                                                           devices_list)));
+        GetValueOrThrow(
+            client_->GetDefaultCompiler()
+                ->CompileAndLoad(
+                    std::make_unique<xla::ifrt::HloProgram>(mlir_module),
+                    std::make_unique<xla::ifrt::XlaCompileOptions>(
+                        compile_options, devices_list))
+                .Await());
     StableHloCompileCounter()->AddValue(1);
 
     const auto& hlo_modules = GetValueOrThrow(executable->GetHloModules());

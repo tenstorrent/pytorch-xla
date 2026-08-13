@@ -943,11 +943,11 @@ py::dict GetMemoryInfo(const std::string& device_str) {
 
 // Must be called holding GIL as it reads Python objects. Also, Python objects
 // are reference counted; reading py::dict will increase its reference count.
-absl::flat_hash_map<std::string, std::variant<int, std::string>>
+absl::flat_hash_map<std::string, std::variant<bool, int, std::string>>
 ConvertDictToMap(const py::dict& dictionary) {
-  absl::flat_hash_map<std::string, std::variant<int, std::string>> map;
+  absl::flat_hash_map<std::string, std::variant<bool, int, std::string>> map;
   for (const auto& item : dictionary) {
-    std::variant<int, std::string> value;
+    std::variant<bool, int, std::string> value;
     try {
       value = item.second.cast<int>();
     } catch (...) {
@@ -1052,7 +1052,7 @@ void BuildProfilerSubmodule(py::module* m) {
           [](const char* service_addr, const char* logdir, int duration_ms,
              int num_tracing_attempts, int timeout_s, int interval_s,
              py::dict options) {
-            absl::flat_hash_map<std::string, std::variant<int, std::string>>
+            absl::flat_hash_map<std::string, std::variant<bool, int, std::string>>
                 opts = ConvertDictToMap(options);
             std::chrono::seconds sleep_s(interval_s);
             absl::Status status;
@@ -1334,7 +1334,7 @@ class PyLoweringContext {
   std::string GetHloJsonText() {
     const xla::HloModuleProto& proto = computation.proto();
     std::string result;
-    google::protobuf::util::MessageToJsonString(proto, &result);
+    XLA_CHECK_OK(google::protobuf::util::MessageToJsonString(proto, &result));
     return result;
   }
 

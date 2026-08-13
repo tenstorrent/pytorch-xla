@@ -1,3 +1,8 @@
+# Use rules_python's py_binary, not the native rule: rules_python substitutes the
+# bootstrap template's %interpreter_args% placeholder, which the native rule
+# leaves in place and crashes this generator with a SyntaxError.
+load("@rules_python//python:py_binary.bzl", "py_binary")
+
 exports_files(["xla_native_functions.yaml"])
 
 # Requires `torchgen` locally, via pip `torch` package or local builds.

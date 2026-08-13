@@ -3,7 +3,10 @@ load(
     "if_cuda_is_configured",
 )
 
-load("@python//:defs.bzl", "compile_pip_requirements")
+# Newer rules_ml_toolchain names the hermetic Python hub repo per-version
+# (e.g. @python_3_12) rather than a plain @python, so load
+# compile_pip_requirements from its canonical, version-independent location.
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@python_version_repo//:py_version.bzl", "REQUIREMENTS")
 
 compile_pip_requirements(
