@@ -102,6 +102,12 @@ build:nonccl --define=no_nccl_support=true
 
 build:linux --config=posix
 
+# Hermetic sysroot override: the default (linux_glibc_2_27, GCC 8.4) ships the
+# pre-GCC-9 std::filesystem::__cxx11::path, whose layout mismatches the GCC-12/14
+# runtime libstdc++ and crashes torch_xla's PersistentCache. GCC 10 has the stable
+# filesystem::path ABI; glibc 2.31 stays within tt-xla's manylinux_2_34 floor.
+build:linux --repo_env=SYSROOT_DIST=linux_glibc_2_31
+
 # Suppress all warning messages.
 build:short_logs --output_filter=DONT_MATCH_ANYTHING
 
