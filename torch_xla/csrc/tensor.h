@@ -267,12 +267,18 @@ class XLATensor : public torch::lazy::LazyTensor {
     ShardingSpec(const xla::OpSharding& sharding, const xla::Shape& shape,
                  const bool& minibatch)
         : sharding(sharding), shape(shape), minibatch(minibatch) {}
+    ShardingSpec(const xla::OpSharding& sharding, const xla::Shape& shape,
+                 const std::vector<int64_t>& priority)
+        : sharding(sharding), shape(shape), priority(priority) {}
 
     xla::OpSharding sharding = xla::HloSharding::Unknown().ToProto();
     // Optional source tensor shape unpartitioned.
     xla::Shape shape;
     // Parameter for represent input batch in sharded along batch axes
     bool minibatch = false;
+    // Priority for Shardy propagation (lower value = higher priority, -1 =
+    // default)
+    std::vector<int64_t> priority;
   };
 
   // Annotate the IR value with ShardingSpec.

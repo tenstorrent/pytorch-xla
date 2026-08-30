@@ -265,9 +265,14 @@ void XLATensor::SetShardingSpec(const ShardingSpec& sharding, bool overwrite) {
         << ", must be cleared before applying a new one, "
         << sharding.sharding.DebugString();
   }
-  // Sync to the node.
-  dynamic_cast<XlaNode*>(GetIrValue().node.get())
-      ->SetSharding(sharding_spec()->sharding, GetIrValue().index);
+  // Sync to the node with priority if available.
+  XlaNode* xla_node = dynamic_cast<XlaNode*>(GetIrValue().node.get());
+  if (sharding_spec()->priority.empty()) {
+    xla_node->SetSharding(sharding_spec()->sharding, GetIrValue().index);
+  } else {
+    xla_node->SetSharding(sharding_spec()->sharding, GetIrValue().index,
+                          sharding_spec()->priority);
+  }
 }
 void XLATensor::ClearShardingSpec() {
   data()->sharding = nullptr;

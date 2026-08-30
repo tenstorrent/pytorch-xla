@@ -1,0 +1,127 @@
+--- a/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc	2025-12-19 17:08:54.786349862 +0000
++++ b/xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.cc	2025-12-19 17:16:25.736960668 +0000
+@@ -37,6 +37,7 @@
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/Support/Casting.h"
+ #include "llvm/Support/LogicalResult.h"
++#include "mlir/AsmParser/AsmParser.h"
+ #include "mlir/Dialect/Func/IR/FuncOps.h"
+ #include "mlir/IR/Attributes.h"
+ #include "mlir/IR/Builders.h"
+@@ -535,6 +536,52 @@
+   return 0;
+ }
+ 
++
++// Try to parse priority info from xla.sdy.sharding frontend attribute.
++// Returns a vector of priorities for each dimension, or empty if not present.
++SmallVector<std::optional<int64_t>> tryParsePrioritiesFromFrontendAttr(
++    mlir::DictionaryAttr frontendAttrs, mlir::MLIRContext* ctx) {
++  SmallVector<std::optional<int64_t>> priorities;
++  if (!frontendAttrs) {
++    return priorities;
++  }
++  auto sdyShardingAttr = frontendAttrs.getAs<StringAttr>(kShardingRoundTripAttr);
++  if (!sdyShardingAttr) {
++    return priorities;
++  }
++  // Parse the SDY sharding string to extract priority info
++  auto parsed = mlir::parseAttribute(sdyShardingAttr.getValue(), ctx);
++  if (auto tensorSharding = mlir::dyn_cast_or_null<TensorShardingAttr>(parsed)) {
++    for (auto dimSharding : tensorSharding.getDimShardings()) {
++      priorities.push_back(dimSharding.getPriority());
++    }
++  }
++  return priorities;
++}
++
++// Apply priorities to a TensorShardingAttr.
++// Returns a new TensorShardingAttr with priorities applied.
++TensorShardingAttr applyPrioritiesToSharding(
++    TensorShardingAttr sharding,
++    const SmallVector<std::optional<int64_t>>& priorities,
++    mlir::MLIRContext* ctx) {
++  if (priorities.empty()) {
++    return sharding;
++  }
++  SmallVector<DimensionShardingAttr> newDimShardings;
++  auto dimShardings = sharding.getDimShardings();
++  for (size_t i = 0; i < dimShardings.size(); ++i) {
++    auto dimSharding = dimShardings[i];
++    std::optional<int64_t> priority =
++        (i < priorities.size()) ? priorities[i] : std::nullopt;
++    // Create new DimensionShardingAttr with priority
++    newDimShardings.push_back(DimensionShardingAttr::get(
++        ctx, dimSharding.getAxes(), dimSharding.getIsClosed(), priority));
++  }
++  return TensorShardingAttr::get(ctx, sharding.getMeshOrRef(),
++                                 newDimShardings, sharding.getReplicatedAxes(), sharding.getUnreducedAxes());
++}
++
+ // Convert the shardings in `funcOp` from kXlaShardingAttr into kShardingAttr.
+ LogicalResult importShardings(
+     FuncOp funcOp, MeshAttr globalMesh,
+@@ -542,13 +589,21 @@
+     ArrayRef<bool> allowPropagationToArgs,
+     ArrayRef<bool> allowPropagationToResults) {
+   for (auto [argNum, argType] : llvm::enumerate(funcOp.getArgumentTypes())) {
++    // Extract priorities from xla.sdy.sharding if present
++    SmallVector<std::optional<int64_t>> priorities;
++    if (mlir::DictionaryAttr frontendAttrs = funcOp.getArgAttrOfType<mlir::DictionaryAttr>(argNum, kFrontendAttributesAttr)) {
++      priorities = tryParsePrioritiesFromFrontendAttr(frontendAttrs, funcOp.getContext());
++    }
+     if (auto oldSharding =
+             funcOp.getArgAttrOfType<StringAttr>(argNum, kXlaShardingAttr)) {
+-      funcOp.setArgAttr(
+-          argNum, kShardingAttr,
+-          convertToSdySharding(parseShardingFromString(oldSharding), globalMesh,
+-                               deviceIdToMaximalMeshName, getRank(argType),
+-                               shouldOpenDims(allowPropagationToArgs, argNum)));
++      auto sdySharding = convertToSdySharding(
++          parseShardingFromString(oldSharding), globalMesh,
++          deviceIdToMaximalMeshName, getRank(argType),
++          shouldOpenDims(allowPropagationToArgs, argNum));
++      if (!priorities.empty()) {
++        sdySharding = applyPrioritiesToSharding(sdySharding, priorities, funcOp.getContext());
++      }
++      funcOp.setArgAttr(argNum, kShardingAttr, sdySharding);
+       funcOp.removeArgAttr(argNum, kXlaShardingAttr);
+     }
+   }
+@@ -568,20 +623,31 @@
+   }
+ 
+   funcOp.front().walk([&](mlir::Operation* op) {
++    // Extract priorities from xla.sdy.sharding if present
++    SmallVector<std::optional<int64_t>> priorities;
++    if (mlir::DictionaryAttr frontendAttrs =
++            op->getAttrOfType<mlir::DictionaryAttr>(kFrontendAttributesAttr)) {
++      priorities = tryParsePrioritiesFromFrontendAttr(frontendAttrs, op->getContext());
++    }
+     if (auto oldSharding = op->getAttrOfType<StringAttr>(kXlaShardingAttr)) {
+       const xla::HloSharding hloSharding = parseShardingFromString(oldSharding);
+       ArrayRef<xla::HloSharding> flatHloSharding = hloSharding;
+       if (hloSharding.IsTuple()) {
+         flatHloSharding = hloSharding.tuple_elements();
+       }
++      size_t numResults = op->getNumResults();
+       SmallVector<TensorShardingAttr> newShardings;
+-      newShardings.reserve(op->getNumResults());
++      newShardings.reserve(numResults);
+       for (const auto& [resHloSharding, resType] :
+            llvm::zip_equal(flatHloSharding, op->getResultTypes())) {
+-        newShardings.push_back(convertToSdySharding(resHloSharding, globalMesh,
+-                                                    deviceIdToMaximalMeshName,
+-                                                    getRank(resType),
+-                                                    /*openDims=*/false));
++        auto sdySharding = convertToSdySharding(resHloSharding, globalMesh,
++                                                deviceIdToMaximalMeshName,
++                                                getRank(resType),
++                                                /*openDims=*/false);
++        if (!priorities.empty() && numResults == 1) {
++          sdySharding = applyPrioritiesToSharding(sdySharding, priorities, op->getContext());
++        }
++        newShardings.push_back(sdySharding);
+       }
+       mlir::sdy::setShardings(op, newShardings);
+       op->removeAttr(kXlaShardingAttr);

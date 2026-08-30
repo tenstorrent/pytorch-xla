@@ -57,6 +57,7 @@ http_archive(
     patch_tool = "patch",
     patches = [
         "//openxla_patches:count_down.diff",
+        "//openxla_patches:sdy_sharding_priority.diff",
     ],
     strip_prefix = "xla-" + xla_hash,
     urls = [
