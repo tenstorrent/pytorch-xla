@@ -712,6 +712,16 @@ XLAGraphExecutor::SyncTensorCollection XLAGraphExecutor::CollectSyncTensors(
       // tensor (so that a following ToTensor() does not need to fetch it from
       // device).
       tensors[at_tensor_index[i]]->data()->handle = std::move(handles[i]);
+
+      // The host caching above keeps a redundant CPU copy alive for the whole
+      // lifetime of the device tensor. For memory-sensitive workloads (e.g.
+      // large weights) drop the host copy now that the data is on device; a
+      // later ToTensor() will fetch it back from device instead.
+      static const bool keep_host_input_cache =
+          runtime::sys_util::GetEnvBool("XLA_KEEP_HOST_INPUT_CACHE", true);
+      if (!keep_host_input_cache) {
+        tensors[at_tensor_index[i]]->data()->tensor_data = std::nullopt;
+      }
     }
   }
   TF_VLOG(4) << "Tensors graph hash " << torch::lazy::HashToString(coll.hash)
