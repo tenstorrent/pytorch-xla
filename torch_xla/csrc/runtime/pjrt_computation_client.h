@@ -195,8 +195,13 @@ class PjRtComputationClient : public ComputationClient {
   std::unique_ptr<xla::PjRtClient> client_;
   std::unique_ptr<XlaCoordinator> coordinator_;
   // global_ordinals_ tracks a map from PjRtDeviceId to the device's
-  // dense global ordinal.
-  std::unordered_map<int, int> global_ordinals_;
+  // dense global ordinal. Populated once in Initialize(), but
+  // PjRtDeviceToString() may lazily add an entry for a device that was not
+  // present in that initial snapshot (see PjRtDeviceToString for why), so
+  // both the map and its guarding mutex are mutable despite being touched
+  // from a const method.
+  mutable std::mutex global_ordinals_mu_;
+  mutable std::unordered_map<int, int> global_ordinals_;
   std::unordered_map<std::string, xla::PjRtDevice* const> string_to_device_;
   std::shared_ptr<std::vector<std::string>> replication_devices_;
   OperationManager operation_manager_;

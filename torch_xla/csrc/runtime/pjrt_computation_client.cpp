@@ -149,7 +149,28 @@ std::string PjRtComputationClient::PjRtDeviceToString(
     xla::PjRtDevice* const device) const {
   std::string platform =
       absl::AsciiStrToUpper(device->client()->platform_name());
-  int ordinal = global_ordinals_.at(device->id());
+  int ordinal;
+  {
+    std::lock_guard<std::mutex> lock(global_ordinals_mu_);
+    auto it = global_ordinals_.find(device->id());
+    if (it == global_ordinals_.end()) {
+      // Device not present in Initialize()'s snapshot. Observed
+      // intermittently on multi-board systems, where device discovery can
+      // race with client construction; crashing here (a bare
+      // unordered_map::at()) took down the whole process for a device that
+      // is otherwise perfectly usable. Assign it a fresh ordinal instead of
+      // failing -- it will not collide with any ordinal already handed out,
+      // since those are dense over [0, global_ordinals_.size()).
+      TF_LOG(WARNING) << "Device id " << device->id()
+                       << " missing from global_ordinals_ snapshot taken at "
+                          "Initialize() time; assigning it a new ordinal "
+                          "instead of crashing.";
+      ordinal = global_ordinals_.size();
+      global_ordinals_[device->id()] = ordinal;
+    } else {
+      ordinal = it->second;
+    }
+  }
   std::string str = absl::StrFormat("%s:%d", platform, ordinal);
   return str;
 }
@@ -731,8 +752,11 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       xla::DeviceAssignment device_assignment(1, client_->device_count());
       // DeviceAssignment values must be the PjRtDevice ID, so we need to
       // unwind the global ordinal mapping.
-      for (const auto& [device_id, global_ordinal] : global_ordinals_) {
-        device_assignment(0, global_ordinal) = device_id;
+      {
+        std::lock_guard<std::mutex> lock(global_ordinals_mu_);
+        for (const auto& [device_id, global_ordinal] : global_ordinals_) {
+          device_assignment(0, global_ordinal) = device_id;
+        }
       }
       compile_options.executable_build_options.set_device_assignment(
           device_assignment);
@@ -748,8 +772,11 @@ std::vector<ComputationClient::ComputationPtr> PjRtComputationClient::Compile(
       xla::DeviceAssignment device_assignment(client_->device_count(), 1);
       // DeviceAssignment values must be the PjRtDevice ID, so we need to
       // unwind the global ordinal mapping.
-      for (const auto& [device_id, global_ordinal] : global_ordinals_) {
-        device_assignment(global_ordinal, 0) = device_id;
+      {
+        std::lock_guard<std::mutex> lock(global_ordinals_mu_);
+        for (const auto& [device_id, global_ordinal] : global_ordinals_) {
+          device_assignment(global_ordinal, 0) = device_id;
+        }
       }
       compile_options.executable_build_options.set_device_assignment(
           device_assignment);
